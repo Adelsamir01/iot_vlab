@@ -1,8 +1,10 @@
-# Firmware binaries (large, downloaded at setup)
+# Firmware binaries (large, downloaded or built at setup)
 firmware/
 *.img
 *.qcow2
+*.elf
 vmlinux-*
+vmlinuz-*
 
 # Runtime
 logs/

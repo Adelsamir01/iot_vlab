@@ -78,7 +78,7 @@ class LabManager:
     def _build_qemu_cmd(fw: dict, tap: str, mac: str) -> list[str]:
         fw_dir = Path(fw["_dir"])
         kernel = str(fw_dir / fw["kernel"])
-        rootfs = str(fw_dir / fw["rootfs"])
+        rootfs = str(fw_dir / fw["rootfs"]) if fw.get("rootfs") else None
         arch = fw["arch"]
         machine = fw.get("qemu_machine", "malta")
         mem = fw.get("memory", "256")
@@ -89,7 +89,6 @@ class LabManager:
                 "qemu_bin": "qemu-system-mipsel",
                 "append": "root=/dev/sda1 console=ttyS0",
                 "drive": ["-drive", f"file={rootfs},format=qcow2"],
-                # Uses modern -netdev/-device syntax
                 "net": [
                     "-netdev", f"tap,id=net0,ifname={tap},script=no,downscript=no",
                     "-device", f"e1000,netdev=net0,mac={mac}",
@@ -99,9 +98,20 @@ class LabManager:
                 "qemu_bin": "qemu-system-arm",
                 "append": "root=/dev/sda1 console=ttyAMA0",
                 "drive": ["-drive", f"file={rootfs},format=qcow2"],
-                # VersatilePB has a built-in smc91c111 NIC; use legacy net syntax
                 "net": [
                     "-net", f"nic,macaddr={mac}",
+                    "-net", f"tap,ifname={tap},script=no,downscript=no",
+                ],
+            },
+            "cortex-m3": {
+                "qemu_bin": "qemu-system-arm",
+                "drive": [],
+                # The lm3s6965evb SoC has a built-in Stellaris Ethernet
+                # controller whose MAC is fixed at 00:00:94:00:83:00.
+                # -net nic,model=stellaris wires it to the hub; macaddr
+                # has no effect on the SoC MAC.
+                "net": [
+                    "-net", "nic,model=stellaris",
                     "-net", f"tap,ifname={tap},script=no,downscript=no",
                 ],
             },
@@ -110,6 +120,17 @@ class LabManager:
         profile = ARCH_PROFILES.get(arch)
         if profile is None:
             raise ValueError(f"Unsupported arch: {arch}")
+
+        # MCU targets (no rootfs, no -append, no -m)
+        if arch == "cortex-m3":
+            cmd = [
+                profile["qemu_bin"],
+                "-M", machine,
+                "-kernel", kernel,
+                "-nographic",
+                *profile["net"],
+            ]
+            return cmd
 
         cmd = [
             profile["qemu_bin"],
@@ -131,18 +152,21 @@ class LabManager:
 
     # -- lifecycle -----------------------------------------------------------
 
+    # Stellaris lm3s6965evb SoC hardcodes this MAC in its Ethernet controller
+    STELLARIS_MAC = "00:00:94:00:83:00"
+
     def spawn_instance(self, firmware_id: str) -> str:
         """Boot a new QEMU instance. Returns a unique run_id."""
         fw = self._load_firmware(firmware_id)
         tap = self._get_next_tap()
-        mac = self._generate_mac()
+        mac = self.STELLARIS_MAC if fw["arch"] == "cortex-m3" else self._generate_mac()
         run_id = f"{firmware_id}_{uuid.uuid4().hex[:8]}"
 
         # Validate files exist before touching the network
         fw_dir = Path(fw["_dir"])
         if not (fw_dir / fw["kernel"]).is_file():
             raise FileNotFoundError(f"Kernel missing: {fw_dir / fw['kernel']}")
-        if not (fw_dir / fw["rootfs"]).is_file():
+        if fw.get("rootfs") and not (fw_dir / fw["rootfs"]).is_file():
             raise FileNotFoundError(f"Rootfs missing: {fw_dir / fw['rootfs']}")
 
         self._create_tap(tap)

@@ -1,0 +1,10 @@
+{
+    "id": "zephyr_echo",
+    "name": "Industrial Sensor (Cortex-M3)",
+    "arch": "cortex-m3",
+    "kernel": "zephyr.elf",
+    "rootfs": null,
+    "qemu_machine": "lm3s6965evb",
+    "default_creds": "none",
+    "net_model": "stellaris"
+}
