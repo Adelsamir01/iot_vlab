@@ -1,0 +1,21 @@
+# Firmware binaries (large, downloaded at setup)
+firmware/
+*.img
+*.qcow2
+vmlinux-*
+
+# Runtime
+logs/
+*.log
+*.pid
+*.leases
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# OS
+.DS_Store
+*.swp
+*~
