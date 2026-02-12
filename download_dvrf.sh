@@ -2,7 +2,7 @@
 # download_dvrf.sh — Download DVRF v0.3 MIPS little-endian kernel & rootfs for QEMU
 set -euo pipefail
 
-FW_DIR="$HOME/iot-lab/firmware"
+FW_DIR="$HOME/iot-lab/library/dvrf_v03"
 KERNEL_FILE="$FW_DIR/vmlinux-3.2.0-4-4kc-malta"
 ROOTFS_FILE="$FW_DIR/rootfs.img"
 

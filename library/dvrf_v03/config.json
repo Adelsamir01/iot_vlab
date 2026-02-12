@@ -1,0 +1,9 @@
+{
+    "id": "dvrf_v03",
+    "name": "Damn Vulnerable Router Firmware v0.3",
+    "arch": "mipsel",
+    "kernel": "vmlinux-3.2.0-4-4kc-malta",
+    "rootfs": "rootfs.img",
+    "qemu_machine": "malta",
+    "default_creds": "root:password"
+}

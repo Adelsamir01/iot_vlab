@@ -64,7 +64,7 @@ def main() -> None:
 
     # 5. Firmware files
     from pathlib import Path
-    fw_dir = Path.home() / "iot-lab" / "firmware"
+    fw_dir = Path.home() / "iot-lab" / "library" / "dvrf_v03"
     kernel = fw_dir / "vmlinux-3.2.0-4-4kc-malta"
     rootfs = fw_dir / "rootfs.img"
     check("Kernel image present", kernel.is_file(), str(kernel))
