@@ -25,8 +25,8 @@ The lab supports three classes of device across multiple protocols:
 │  Kali Linux Host                                                         │
 │                                                                          │
 │  ┌────────────┐       ┌───────────────────────────────────────────────┐  │
-│  │ lab_api.py  │       │  br0  virtual bridge  192.168.100.1/24       │  │
-│  │ REST :5000  │──────▶│                                               │  │
+│  │ lab_api.py │       │   br0  virtual bridge  192.168.100.1/24       │  │
+│  │ REST :5000 │──────▶│                                               │  │
 │  └────────────┘       │   tap0 ── QEMU (MIPS Malta)   Linux router    │  │
 │        │              │   tap1 ── QEMU (ARM VersatilePB) Linux GW     │  │
 │        ▼              │   tap2 ── QEMU (ARM lm3s6965evb) Zephyr MCU   │  │
