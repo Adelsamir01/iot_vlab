@@ -5,15 +5,16 @@ Boots real router firmware **and** bare-metal MCU firmware inside QEMU,
 connects every device to a shared virtual network, and exposes a REST API
 so you can spawn, inspect, and tear down devices programmatically.
 
-The lab supports three classes of device in a single network:
+The lab supports three classes of device across multiple protocols:
 
 - **MIPS Linux routers** -- the same architecture found in consumer routers
   (Linksys, D-Link, TP-Link).
 - **ARM Linux gateways** -- representative of ARM-based IoT cameras, hubs,
   and embedded controllers.
-- **ARM Cortex-M3 industrial sensors** -- a resource-constrained MCU running
-  Zephyr RTOS with a bare-metal TCP/IP stack, simulating PLCs, field
-  sensors, and industrial controllers.
+- **ARM Cortex-M3 industrial devices** -- resource-constrained MCUs running
+  Zephyr RTOS with bare-metal TCP/IP stacks, simulating PLCs, field
+  sensors, and industrial controllers with protocol-specific services
+  (CoAP, Modbus/TCP, echo).
 
 ---
 
@@ -43,13 +44,15 @@ physical devices plugged into a real switch.
 
 ---
 
-## Supported Device Architectures
+## Supported Devices
 
-| Firmware ID | Name | CPU | OS / Stack | QEMU Board | Disk | Creds | Boot Time |
+| Firmware ID | Name | CPU | OS / Stack | QEMU Board | Protocol / Port | Creds | Boot |
 |---|---|---|---|---|---|---|---|
-| `dvrf_v03` | Damn Vulnerable Router Firmware v0.3 | MIPS 4Kc (32-bit LE) | Debian Linux | Malta | 288 MB qcow2 | `root:password` | ~60-90 s |
-| `debian_armel` | Debian Wheezy ARM | ARMv5TE (32-bit LE) | Debian Linux | VersatilePB | 219 MB qcow2 | `root:root` | ~60-90 s |
-| `zephyr_echo` | Industrial Sensor (Cortex-M3) | ARM Cortex-M3 | Zephyr RTOS 3.7 | lm3s6965evb | None (ELF only) | None | ~3-6 s |
+| `dvrf_v03` | Damn Vulnerable Router Firmware v0.3 | MIPS 4Kc (32-bit LE) | Debian Linux | Malta | SSH, HTTP | `root:password` | ~60-90 s |
+| `debian_armel` | Debian Wheezy ARM | ARMv5TE (32-bit LE) | Debian Linux | VersatilePB | SSH, HTTP | `root:root` | ~60-90 s |
+| `zephyr_echo` | Industrial Sensor (Echo) | ARM Cortex-M3 | Zephyr RTOS 3.7 | lm3s6965evb | TCP+UDP echo :4242 | None | ~3-6 s |
+| `zephyr_coap` | Smart Meter (CoAP) | ARM Cortex-M3 | Zephyr RTOS 3.7 | lm3s6965evb | CoAP UDP :5683 | None | ~5-8 s |
+| `arm_modbus_sim` | PLC Valve Controller | ARM Cortex-M3 | Zephyr RTOS 3.7 | lm3s6965evb | TCP echo :502 (Modbus port) | None | ~5-8 s |
 
 ### Linux devices (MIPS / ARM)
 
@@ -57,14 +60,38 @@ These boot a full Linux kernel with a root filesystem.  Once running they
 behave like real embedded Linux boxes -- you can SSH into them, run
 `busybox`, sniff traffic, or exploit known CVEs.
 
-### Zephyr MCU device (Cortex-M3)
+### Zephyr MCU devices (Cortex-M3)
 
-This boots a bare-metal Zephyr RTOS image on a Stellaris LM3S6965EVB
-evaluation board (ARM Cortex-M3, 64 KB RAM, 256 KB flash).  It runs a
-TCP + UDP echo server on **port 4242** with a real LwIP-derived network
-stack, DHCPv4 for address assignment, and the Stellaris Ethernet driver.
-No root filesystem or operating system login is involved -- it is a
-single ELF binary that boots in seconds.
+Each boots a bare-metal Zephyr RTOS image on a Stellaris LM3S6965EVB
+evaluation board (ARM Cortex-M3, 64 KB RAM, 256 KB flash).  No root
+filesystem or operating system login is involved -- each is a single
+ELF binary that boots in seconds.
+
+Three firmware variants provide protocol diversity:
+
+- **zephyr_echo** -- TCP + UDP echo on port 4242.  General-purpose
+  reachability target.
+- **zephyr_coap** -- CoAP server on UDP port 5683.  Simulates a smart
+  meter or environmental sensor exposing resources via the
+  Constrained Application Protocol.
+- **arm_modbus_sim** -- TCP echo on port 502 (the standard Modbus/TCP
+  port).  Simulates a "dumb" PLC that echoes any Modbus-framed request,
+  useful for testing industrial protocol scanners.
+
+> **Stellaris MAC constraint:** The lm3s6965evb SoC has a hardcoded MAC
+> address (`00:00:94:00:83:00`) that cannot be overridden at runtime.
+> Only **one** Cortex-M3 device can be on the bridge at a time.  The lab
+> manager enforces this and returns an error if a second is spawned.
+
+### Architecture roadmap (riscv32)
+
+The `lab_manager.py` includes a `riscv32` architecture profile
+(`qemu-system-riscv32 -M virt` with `virtio-net-device`).  It is
+currently a placeholder because Zephyr v3.7 for `qemu_riscv32` has no
+Ethernet driver (no virtio-net binding, no PCI+e1000 DTS, and SLIP
+requires a second UART the virt machine doesn't expose).  The profile
+is ready for activation when future Zephyr versions add support.
+`qemu-system-riscv32` is installed by `setup_network.sh`.
 
 ---
 
@@ -76,7 +103,7 @@ single ELF binary that boots in seconds.
 | **sudo access** | Required for bridge/TAP networking and QEMU |
 | **~600 MB disk** | For the two Linux firmware images |
 | **Python 3.10+** | With `flask` and `requests` |
-| **Zephyr toolchain** (optional) | Only needed if you want to rebuild the Cortex-M3 firmware |
+| **Zephyr toolchain** (optional) | Only needed if you want to rebuild MCU firmware from source |
 
 ---
 
@@ -99,10 +126,9 @@ pip3 install --break-system-packages flask requests
 
 ### 3. Set up the host network
 
-This installs system packages (`qemu-system-mips`, `qemu-system-arm`,
-`bridge-utils`, `dnsmasq`, `iptables`), creates the virtual bridge
-`br0`, starts a DHCP server, and configures NAT so guests can reach the
-internet.
+Installs system packages (`qemu-system-mips`, `qemu-system-arm`,
+`qemu-system-misc`, `bridge-utils`, `dnsmasq`, `iptables`), creates the
+virtual bridge `br0`, starts a DHCP server, and configures NAT.
 
 ```bash
 sudo ./setup_network.sh
@@ -116,46 +142,35 @@ The script is **idempotent** -- safe to run multiple times.
 ./download_firmware.sh
 ```
 
-Downloads MIPS and ARM kernels + root filesystems from Debian's QEMU
-image archive into `library/dvrf_v03/` and `library/debian_armel/`.
+Downloads MIPS and ARM kernels + root filesystems into
+`library/dvrf_v03/` and `library/debian_armel/`.
 
 ### 5. (Optional) Set up the Zephyr toolchain
 
-Only needed if you want to rebuild the Cortex-M3 MCU firmware from
-source.  A pre-built `zephyr.elf` is included in the library.
+Only needed to rebuild MCU firmware from source.  Pre-built ELFs are
+included in the library.
 
 ```bash
 ./setup_zephyr.sh
 ```
 
-This installs:
+Installs cmake, ninja, gperf, `west`, Zephyr SDK v0.16.8, and the
+Zephyr source tree (v3.7.0) at `~/iot-lab/zephyrproject/`.
+**Idempotent**; initial run downloads ~1-2 GB.
 
-- OS build dependencies (cmake, ninja, gperf, ccache, dtc)
-- `west` -- Zephyr's meta-tool
-- Zephyr SDK v0.16.8 (ARM toolchain) at `~/zephyr-sdk/`
-- Zephyr source tree (v3.7.0) at `~/iot-lab/zephyrproject/`
-- Python requirements for Zephyr build scripts
-
-The script is **idempotent** and skips any component that is already
-installed.  The initial run downloads ~1-2 GB of toolchain and source.
-
-### 6. (Optional) Rebuild the Cortex-M3 firmware
+### 6. (Optional) Rebuild MCU firmware
 
 ```bash
+# Original echo server (TCP+UDP :4242)
 ./build_sensor_firmware.sh
+
+# CoAP server (UDP :5683) + Fake PLC (TCP :502)
+./build_advanced_firmware.sh
 ```
 
-Compiles the Zephyr `echo_server` sample for `qemu_cortex_m3` with a
-custom overlay that enables the Stellaris Ethernet driver and DHCPv4.
-The resulting ELF is copied to `library/zephyr_echo/zephyr.elf`.
-
-Build profile (fits in 64 KB RAM):
-
-- Stellaris Ethernet + DHCPv4 (gets IP from br0 dnsmasq)
-- IPv4 only (IPv6 disabled to save RAM)
-- Shell disabled (saves ~8 KB)
-- Reduced buffer counts and stack sizes
-- FLASH usage ~34 %, RAM usage ~82 %
+Each script compiles Zephyr samples for `qemu_cortex_m3` with overlays
+enabling Stellaris Ethernet and DHCPv4, then copies the ELF to the
+appropriate `library/` directory.
 
 ### 7. Verify the infrastructure
 
@@ -163,98 +178,65 @@ Build profile (fits in 64 KB RAM):
 python3 verify_lab.py
 ```
 
-Runs 9 checks: bridge up, DHCP running, QEMU binaries found, firmware
-files present, IP forwarding enabled, gateway reachable.
-
 ---
 
 ## Usage
 
 ### Option A: Run the demo (easiest)
 
-The demo script spawns a multi-architecture network and prints a live
-topology map.  Edit the `NETWORK` list at the top of `demo_network.py`
-to customise which devices to spawn.
-
 ```bash
 sudo python3 demo_network.py
 ```
 
-Default network:
-
-```python
-NETWORK = [
-    {"firmware_id": "dvrf_v03",      "role": "Vulnerable Router"},
-    {"firmware_id": "dvrf_v03",      "role": "IoT Gateway"},
-    {"firmware_id": "debian_armel",  "role": "ARM Sensor Node"},
-]
-```
-
-You can add Zephyr MCU devices to the demo by appending:
-
-```python
-    {"firmware_id": "zephyr_echo",   "role": "Industrial Sensor"},
-```
-
-Press **Ctrl+C** to cleanly shut down all devices and remove TAP
-interfaces.
+Edit the `NETWORK` list in `demo_network.py` to customise which devices
+to spawn.  Press **Ctrl+C** to cleanly shut down.
 
 ### Option B: Use the REST API
-
-Start the API server:
 
 ```bash
 sudo python3 lab_api.py
 ```
 
-Then from another terminal (or any HTTP client):
+Then from another terminal:
 
 ```bash
-# List all available firmware in the library
+# List firmware library
 curl -s http://localhost:5000/library | python3 -m json.tool
 
-# Spawn a MIPS router
+# Spawn devices (one cortex-m3 at a time)
 curl -s -X POST http://localhost:5000/spawn \
   -H 'Content-Type: application/json' \
   -d '{"firmware_id": "dvrf_v03"}'
-# Returns: {"run_id": "dvrf_v03_a1b2c3d4"}
 
-# Spawn an ARM gateway
 curl -s -X POST http://localhost:5000/spawn \
   -H 'Content-Type: application/json' \
-  -d '{"firmware_id": "debian_armel"}'
+  -d '{"firmware_id": "zephyr_coap"}'
 
-# Spawn a Cortex-M3 industrial sensor
-curl -s -X POST http://localhost:5000/spawn \
-  -H 'Content-Type: application/json' \
-  -d '{"firmware_id": "zephyr_echo"}'
-
-# View the live topology (IP, MAC, TAP, PID, alive status for each device)
+# View live topology
 curl -s http://localhost:5000/topology | python3 -m json.tool
 
 # Stop one device
-curl -s -X POST http://localhost:5000/kill/dvrf_v03_a1b2c3d4
+curl -s -X POST http://localhost:5000/kill/<run_id>
 
 # Stop everything
 curl -s -X POST http://localhost:5000/reset_lab
 ```
 
-### Option C: Talk to the Zephyr echo server directly
+### Option C: Talk to MCU devices directly
 
-Once a `zephyr_echo` device is running and has acquired a DHCP lease
-(check `GET /topology` for the IP), you can test it:
+Once a device has acquired a DHCP lease (check `GET /topology` for the
+IP):
 
 ```bash
-# TCP echo (port 4242)
-echo "Hello Industrial" | nc <device_ip> 4242
-# You should receive "Hello Industrial" back
+# Echo server (port 4242)
+echo "Hello Industrial" | nc <ip> 4242
 
-# UDP echo (port 4242)
-echo "Hello Industrial" | nc -u <device_ip> 4242
+# CoAP server (port 5683) — send a CoAP GET
+echo -ne '\x40\x01\x00\x01' | nc -u -w2 <ip> 5683
+
+# Fake PLC (port 502) — Modbus/TCP port
+echo "ModbusPing" | nc <ip> 502
 ```
-
-This confirms Layer-3 connectivity between the host and the bare-metal
-MCU over the virtual bridge.
 
 ---
 
@@ -277,37 +259,45 @@ HTTP status code (400, 404, or 500).
 
 ```
 .
-├── setup_network.sh            # Create br0 bridge, dnsmasq DHCP, NAT (idempotent)
-├── setup_zephyr.sh             # Install Zephyr SDK, west, source tree (idempotent)
-├── download_firmware.sh        # Download MIPS + ARM Linux firmware images
+├── setup_network.sh            # Create br0 bridge, dnsmasq DHCP, NAT
+├── setup_zephyr.sh             # Install Zephyr SDK, west, source tree
+├── download_firmware.sh        # Download MIPS + ARM Linux firmware
 ├── build_sensor_firmware.sh    # Compile Zephyr echo_server for Cortex-M3
+├── build_advanced_firmware.sh  # Compile CoAP server + Fake PLC for Cortex-M3
 │
 ├── lab_api.py                  # Flask REST API (port 5000)
 ├── lab_manager.py              # LabManager class — QEMU process lifecycle
 ├── scan_library.py             # Scan library/ for firmware config.json files
-├── demo_network.py             # Spawn a multi-arch network with live topology display
+├── demo_network.py             # Spawn a multi-arch network with live topology
 ├── start_emulation.py          # Legacy single-device CLI controller
-├── verify_lab.py               # 9-check infrastructure self-test
+├── verify_lab.py               # Infrastructure self-test
 │
 ├── library/
-│   ├── dvrf_v03/
-│   │   ├── config.json                     # Firmware metadata
-│   │   ├── vmlinux-3.2.0-4-4kc-malta      # MIPS kernel (8 MB)
-│   │   └── rootfs.img                      # MIPS root filesystem (288 MB qcow2)
-│   ├── debian_armel/
-│   │   ├── config.json                     # Firmware metadata
-│   │   ├── vmlinuz-3.2.0-4-versatile       # ARM kernel (1.4 MB)
-│   │   ├── initrd.img-3.2.0-4-versatile    # ARM initrd (2.5 MB)
-│   │   └── rootfs.qcow2                    # ARM root filesystem (219 MB qcow2)
-│   └── zephyr_echo/
-│       ├── config.json                     # Firmware metadata
-│       └── zephyr.elf                      # Zephyr echo_server binary (~90 KB code)
+│   ├── dvrf_v03/               # MIPS Linux router firmware
+│   │   ├── config.json
+│   │   ├── vmlinux-3.2.0-4-4kc-malta
+│   │   └── rootfs.img
+│   ├── debian_armel/           # ARM Linux gateway firmware
+│   │   ├── config.json
+│   │   ├── vmlinuz-3.2.0-4-versatile
+│   │   ├── initrd.img-3.2.0-4-versatile
+│   │   └── rootfs.qcow2
+│   ├── zephyr_echo/            # Zephyr echo server (TCP+UDP :4242)
+│   │   ├── config.json
+│   │   └── zephyr.elf
+│   ├── zephyr_coap/            # Zephyr CoAP server (UDP :5683)
+│   │   ├── config.json
+│   │   └── zephyr.elf
+│   └── arm_modbus_sim/         # Fake PLC echo (TCP :502)
+│       ├── config.json
+│       └── zephyr.elf
 │
 ├── tests/
-│   ├── test_phase2.py          # 15-check orchestration integration test
-│   └── test_phase2_5.py        # 12-check Cortex-M3 / Zephyr verification test
+│   ├── test_phase2.py          # Multi-device orchestration test
+│   ├── test_phase2_5.py        # Cortex-M3 / Zephyr echo verification
+│   └── test_phase2_6.py        # CoAP + Fake PLC protocol expansion test
 │
-├── logs/                       # QEMU console logs (auto-created at runtime)
+├── logs/                       # QEMU console logs (auto-created)
 └── .gitignore
 ```
 
@@ -319,29 +309,32 @@ HTTP status code (400, 404, or 500).
 hypervisor.  When you call `spawn_instance(firmware_id)`:
 
 1. **Firmware lookup** -- `scan_library.py` scans `library/*/config.json`
-   and returns the matching config (architecture, kernel path, rootfs
-   path, QEMU machine type).
+   and returns the matching config.
 
-2. **TAP creation** -- A new `tapN` interface is created, attached to the
-   `br0` bridge, and brought up.
+2. **Stellaris guard** -- If the firmware is `cortex-m3`, the manager
+   checks that no other Cortex-M3 instance is running (hardcoded MAC
+   conflict prevention).
 
-3. **QEMU command construction** -- Architecture-specific QEMU flags are
-   selected from one of three profiles:
+3. **TAP creation** -- A new `tapN` interface is created, attached to
+   `br0`, and brought up.
+
+4. **QEMU command construction** -- Architecture-specific flags:
 
    | Arch | QEMU Binary | Machine | Drive | Network | Notes |
    |---|---|---|---|---|---|
    | `mipsel` | `qemu-system-mipsel` | `malta` | qcow2 rootfs | `-netdev tap` + `-device e1000` | Full Linux, 256 MB RAM |
    | `armel` | `qemu-system-arm` | `versatilepb` | qcow2 rootfs | `-net nic` + `-net tap` | Full Linux, 256 MB RAM |
    | `cortex-m3` | `qemu-system-arm` | `lm3s6965evb` | None | `-net nic,model=stellaris` + `-net tap` | Bare-metal ELF, no rootfs |
+   | `riscv32` | `qemu-system-riscv32` | `virt` | None | `-device virtio-net-device` + `-netdev tap` | Bare-metal ELF, `-bios none -m 256` |
 
-4. **Process launch** -- QEMU runs as a background process with console
+5. **Process launch** -- QEMU runs as a background process with console
    output redirected to `logs/qemu-<run_id>.log`.
 
-5. **IP discovery** -- `refresh_ips()` polls `/var/lib/misc/dnsmasq-br0.leases`
-   and matches MAC addresses to update each instance's IP.
+6. **IP discovery** -- `refresh_ips()` polls dnsmasq leases and matches
+   MAC addresses.
 
-6. **Teardown** -- `stop_instance()` sends SIGTERM (with SIGKILL fallback),
-   closes the log file, and destroys the TAP interface.
+7. **Teardown** -- `stop_instance()` sends SIGTERM (SIGKILL fallback),
+   closes the log, and destroys the TAP.
 
 ---
 
@@ -349,9 +342,9 @@ hypervisor.  When you call `spawn_instance(firmware_id)`:
 
 ### Linux-based firmware (MIPS or ARM)
 
-1. Create a directory: `library/my_firmware/`
-2. Place the kernel and root filesystem inside it.
-3. Create `library/my_firmware/config.json`:
+1. Create `library/my_firmware/`
+2. Place kernel and root filesystem inside.
+3. Create `config.json`:
 
 ```json
 {
@@ -367,9 +360,9 @@ hypervisor.  When you call `spawn_instance(firmware_id)`:
 
 ### Bare-metal MCU firmware (Cortex-M3)
 
-1. Create a directory: `library/my_mcu_app/`
-2. Place the compiled ELF binary inside it.
-3. Create `library/my_mcu_app/config.json`:
+1. Create `library/my_mcu_app/`
+2. Place the compiled ELF binary inside.
+3. Create `config.json`:
 
 ```json
 {
@@ -384,9 +377,8 @@ hypervisor.  When you call `spawn_instance(firmware_id)`:
 }
 ```
 
-Supported `arch` values: `mipsel`, `armel`, `cortex-m3`.
-The API and demo script pick up new firmware automatically on the next
-run.
+Supported `arch` values: `mipsel`, `armel`, `cortex-m3`, `riscv32`.
+New firmware is picked up automatically on the next API/demo run.
 
 ---
 
@@ -411,34 +403,33 @@ Layer-2 bridge and can communicate with each other, with the host, and
 ## Running Tests
 
 ```bash
-# Infrastructure checks (9 tests) — no sudo needed
+# Infrastructure checks — no sudo needed
 python3 verify_lab.py
 
-# API + multi-device orchestration (15 tests) — needs sudo
-# Requires: dvrf_v03 firmware downloaded
+# Multi-device orchestration — needs sudo + dvrf_v03 firmware
 sudo python3 tests/test_phase2.py
 
-# Cortex-M3 / Zephyr verification (12 tests) — needs sudo
-# Requires: br0 bridge running, zephyr_echo firmware built
+# Cortex-M3 echo verification (12 tests)
 sudo python3 tests/test_phase2_5.py
+
+# CoAP + Fake PLC protocol expansion (23 tests)
+sudo python3 tests/test_phase2_6.py
 ```
 
-### What `test_phase2_5.py` verifies
+### What `test_phase2_6.py` verifies
 
-| # | Check | What it does |
+| # | Check | Details |
 |---|---|---|
 | 1 | API reachable | Starts `lab_api.py` and waits for HTTP 200 |
-| 2 | Library contains `zephyr_echo` | `GET /library` includes the MCU firmware |
-| 3 | Spawn succeeds | `POST /spawn` returns 201 with a `run_id` |
-| 4 | Instance in topology | `GET /topology` lists the device |
-| 5 | QEMU PID alive | `kill -0` confirms the process is running |
-| 6 | TAP interface exists | `ip link show tapN` succeeds |
-| 7 | TAP attached to br0 | `bridge link show` includes the TAP |
-| 8 | DHCP lease acquired | Polls topology until IP appears (~3-6 s) |
-| 9 | TCP echo on port 4242 | Sends `"Hello Industrial"`, receives it back |
-| 10 | Kill succeeds | `POST /kill/<run_id>` returns 200 |
-| 11 | TAP removed after kill | `ip link show tapN` fails |
-| 12 | Topology empty | `GET /topology` returns `[]` |
+| 2-3 | Library entries | `zephyr_coap` and `arm_modbus_sim` present |
+| 4-8 | CoAP spawn + network | Spawn, PID alive, TAP on br0, DHCP lease |
+| 9 | CoAP protocol | UDP probe on port 5683 gets a response |
+| 10-11 | CoAP cleanup | Kill, TAP removed |
+| 12-16 | PLC spawn + network | Spawn, PID alive, TAP on br0, DHCP lease |
+| 17 | PLC protocol | TCP echo on port 502 returns the sent message |
+| 18-19 | PLC cleanup | Kill, TAP removed |
+| 20 | MAC conflict guard | Second cortex-m3 spawn returns 500 |
+| 21 | Final topology | Empty after all tests |
 
 ---
 
@@ -450,13 +441,12 @@ sudo python3 tests/test_phase2_5.py
 | `br0` doesn't exist | Re-run `sudo ./setup_network.sh` |
 | QEMU not found | Re-run `sudo ./setup_network.sh` (installs packages) |
 | Linux firmware files missing | Run `./download_firmware.sh` |
-| Zephyr firmware missing | Run `./build_sensor_firmware.sh` (needs `setup_zephyr.sh` first) |
+| Zephyr firmware missing | Run `./build_sensor_firmware.sh` or `./build_advanced_firmware.sh` |
 | `west` not found | Run `./setup_zephyr.sh` |
-| `west build` fails with `ModuleNotFoundError: elftools` | `pip3 install --break-system-packages pyelftools` |
-| `west build` fails with RAM overflow | The Kconfig overlay disables IPv6 and shell to fit in 64 KB; check `build_sensor_firmware.sh` |
+| `west build` RAM overflow | The Kconfig overlays disable IPv6 and shell to fit 64 KB; check build scripts |
 | Linux guest has no IP | Wait 60-90 s for boot + DHCP; check `cat /var/lib/misc/dnsmasq-br0.leases` |
-| Zephyr guest has no IP | Boots in ~3-6 s; check that dnsmasq is running (`pgrep -a dnsmasq`) |
-| Zephyr echo doesn't respond | Verify the device IP from `/topology`, then `nc <ip> 4242` |
+| Zephyr guest has no IP | Boots in ~3-8 s; check that dnsmasq is running (`pgrep -a dnsmasq`) |
+| Second MCU device blocked | Only one cortex-m3 at a time (Stellaris MAC constraint); kill the first |
 | QEMU crashes immediately | Check `logs/qemu-*.log` for errors |
 | dnsmasq died | Re-run `sudo ./setup_network.sh` |
 

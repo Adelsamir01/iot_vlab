@@ -115,17 +115,39 @@ class LabManager:
                     "-net", f"tap,ifname={tap},script=no,downscript=no",
                 ],
             },
+            "riscv32": {
+                "qemu_bin": "qemu-system-riscv32",
+                "drive": [],
+                # RISC-V virt board — virtio-net-device (requires future
+                # Zephyr virtio-net driver; placeholder for SLIP bridge).
+                "net": [
+                    "-netdev", f"tap,id=net0,ifname={tap},script=no,downscript=no",
+                    "-device", f"virtio-net-device,netdev=net0,mac={mac}",
+                ],
+            },
         }
 
         profile = ARCH_PROFILES.get(arch)
         if profile is None:
             raise ValueError(f"Unsupported arch: {arch}")
 
-        # MCU targets (no rootfs, no -append, no -m)
+        # MCU / bare-metal targets (no rootfs, no -append)
         if arch == "cortex-m3":
             cmd = [
                 profile["qemu_bin"],
                 "-M", machine,
+                "-kernel", kernel,
+                "-nographic",
+                *profile["net"],
+            ]
+            return cmd
+
+        if arch == "riscv32":
+            cmd = [
+                profile["qemu_bin"],
+                "-M", machine,
+                "-bios", "none",
+                "-m", "256",
                 "-kernel", kernel,
                 "-nographic",
                 *profile["net"],
@@ -158,6 +180,17 @@ class LabManager:
     def spawn_instance(self, firmware_id: str) -> str:
         """Boot a new QEMU instance. Returns a unique run_id."""
         fw = self._load_firmware(firmware_id)
+
+        # Stellaris lm3s6965evb shares a single hardcoded MAC across all
+        # cortex-m3 instances — only one may be on the bridge at a time.
+        if fw["arch"] == "cortex-m3":
+            for inst in self.active_instances.values():
+                if inst["arch"] == "cortex-m3" and inst["_proc"].poll() is None:
+                    raise RuntimeError(
+                        f"Only one cortex-m3 device allowed at a time "
+                        f"(Stellaris MAC conflict). Running: {inst['id']}"
+                    )
+
         tap = self._get_next_tap()
         mac = self.STELLARIS_MAC if fw["arch"] == "cortex-m3" else self._generate_mac()
         run_id = f"{firmware_id}_{uuid.uuid4().hex[:8]}"

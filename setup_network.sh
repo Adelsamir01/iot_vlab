@@ -23,7 +23,7 @@ die()   { echo "[ERROR] $*" >&2; exit 1; }
 [[ $EUID -eq 0 ]] || die "This script must be run as root (use sudo)."
 
 # ---------- 1. Install missing packages ----------
-PACKAGES=(qemu-system-mips qemu-system-arm binwalk bridge-utils dnsmasq iptables)
+PACKAGES=(qemu-system-mips qemu-system-arm qemu-system-misc binwalk bridge-utils dnsmasq iptables)
 MISSING=()
 for pkg in "${PACKAGES[@]}"; do
     if ! dpkg -s "$pkg" &>/dev/null; then
