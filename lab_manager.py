@@ -81,29 +81,53 @@ class LabManager:
         rootfs = str(fw_dir / fw["rootfs"])
         arch = fw["arch"]
         machine = fw.get("qemu_machine", "malta")
+        mem = fw.get("memory", "256")
 
-        if arch == "mipsel":
-            qemu_bin = "qemu-system-mipsel"
-            append = "root=/dev/sda1 console=ttyS0"
-            drive = ["-drive", f"file={rootfs},format=qcow2"]
-        elif arch == "arm":
-            qemu_bin = "qemu-system-arm"
-            append = "root=/dev/vda1 console=ttyAMA0"
-            drive = ["-drive", f"file={rootfs},format=raw,if=virtio"]
-        else:
+        # Architecture-specific defaults
+        ARCH_PROFILES = {
+            "mipsel": {
+                "qemu_bin": "qemu-system-mipsel",
+                "append": "root=/dev/sda1 console=ttyS0",
+                "drive": ["-drive", f"file={rootfs},format=qcow2"],
+                # Uses modern -netdev/-device syntax
+                "net": [
+                    "-netdev", f"tap,id=net0,ifname={tap},script=no,downscript=no",
+                    "-device", f"e1000,netdev=net0,mac={mac}",
+                ],
+            },
+            "armel": {
+                "qemu_bin": "qemu-system-arm",
+                "append": "root=/dev/sda1 console=ttyAMA0",
+                "drive": ["-drive", f"file={rootfs},format=qcow2"],
+                # VersatilePB has a built-in smc91c111 NIC; use legacy net syntax
+                "net": [
+                    "-net", f"nic,macaddr={mac}",
+                    "-net", f"tap,ifname={tap},script=no,downscript=no",
+                ],
+            },
+        }
+
+        profile = ARCH_PROFILES.get(arch)
+        if profile is None:
             raise ValueError(f"Unsupported arch: {arch}")
 
-        return [
-            qemu_bin,
+        cmd = [
+            profile["qemu_bin"],
             "-M", machine,
             "-kernel", kernel,
-            *drive,
+            *profile["drive"],
             "-nographic",
-            "-append", append,
-            "-m", "256",
-            "-netdev", f"tap,id=net0,ifname={tap},script=no,downscript=no",
-            "-device", f"e1000,netdev=net0,mac={mac}",
+            "-append", profile["append"],
+            "-m", str(mem),
+            *profile["net"],
         ]
+
+        # Optional initrd (required by some compressed kernels)
+        if "initrd" in fw:
+            initrd = str(fw_dir / fw["initrd"])
+            cmd.extend(["-initrd", initrd])
+
+        return cmd
 
     # -- lifecycle -----------------------------------------------------------
 
@@ -143,6 +167,8 @@ class LabManager:
         self.active_instances[run_id] = {
             "id": run_id,
             "firmware_id": firmware_id,
+            "arch": fw["arch"],
+            "name": fw.get("name", firmware_id),
             "pid": proc.pid,
             "tap": tap,
             "mac": mac,
@@ -190,6 +216,8 @@ class LabManager:
             topo.append({
                 "id": inst["id"],
                 "firmware_id": inst["firmware_id"],
+                "arch": inst["arch"],
+                "name": inst["name"],
                 "pid": inst["pid"],
                 "tap": inst["tap"],
                 "mac": inst["mac"],
