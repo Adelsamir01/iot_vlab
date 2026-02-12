@@ -14,11 +14,11 @@ It lets you build a **virtual network of IoT devices** on a single machine:
 │  Your Kali Linux host                                           │
 │                                                                 │
 │  ┌───────────┐       ┌────────────────────────────────────────┐ │
-│  │ lab_api.py │       │  br0  virtual bridge  192.168.100.1   │ │
-│  │ REST :5000 │──────▶│                                        │ │
-│  └───────────┘       │   tap0 ── QEMU VM 1 (MIPS router)     │ │
-│        │              │   tap1 ── QEMU VM 2 (MIPS gateway)    │ │
-│        ▼              │   tap2 ── QEMU VM 3 (ARM sensor)      │ │
+│  │lab_api.py │       │  br0  virtual bridge  192.168.100.1    │ │
+│  │REST :5000 │──────▶│                                        │ │
+│  └───────────┘       │   tap0 ── QEMU VM 1 (MIPS router)      │ │
+│        │             │   tap1 ── QEMU VM 2 (MIPS gateway)     │ │
+│        ▼             │   tap2 ── QEMU VM 3 (ARM sensor)       │ │
 │  ┌───────────┐       │                                        │ │
 │  │lab_manager│       │   dnsmasq ── DHCP for guests           │ │
 │  │   .py     │       │   iptables ─ NAT to internet           │ │
