@@ -1,5 +1,3 @@
-# llm_iot_sec
-
 A native (non-Docker) IoT firmware emulation lab built on Kali Linux. Uses QEMU to boot vulnerable router firmware with full host network connectivity for security research and penetration testing.
 
 ## Architecture
@@ -31,8 +29,8 @@ A native (non-Docker) IoT firmware emulation lab built on Kali Linux. Uses QEMU 
 
 ```bash
 # 1. Clone
-git clone https://github.com/Adelsamir01/llm_iot_sec.git
-cd llm_iot_sec
+git clone https://github.com/Adelsamir01/iot_vlab.git
+cd iot_vlab
 
 # 2. Set up host network & install dependencies (requires sudo)
 sudo ./setup_network.sh
