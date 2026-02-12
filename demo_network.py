@@ -26,9 +26,11 @@ from scan_library import scan
 # Define the network: each entry is a firmware_id from the library and a
 # human-readable role label.  Add or remove entries to change the network.
 NETWORK = [
-    {"firmware_id": "dvrf_v03",      "role": "Vulnerable Router"},
-    {"firmware_id": "dvrf_v03",      "role": "IoT Gateway"},
-    {"firmware_id": "debian_armel",  "role": "ARM Sensor Node"},
+    {"firmware_id": "dvrf_v03",       "role": "Vulnerable Router"},
+    {"firmware_id": "dvrf_v03",       "role": "IoT Gateway"},
+    {"firmware_id": "debian_armel",   "role": "ARM Sensor Node"},
+    {"firmware_id": "debian_armel",   "role": "ARM Camera"},
+    {"firmware_id": "zephyr_coap",    "role": "Smart Meter (CoAP)"},
 ]
 
 BOOT_WAIT = 10          # seconds to wait for DHCP leases after spawning
@@ -39,8 +41,10 @@ IP_POLL_ROUNDS = 6      # how many times to poll before giving up
 # ── Topology display ────────────────────────────────────────────────────
 
 ARCH_LABELS = {
-    "mipsel": "MIPS32 Little-Endian",
-    "armel":  "ARMv5 Little-Endian",
+    "mipsel":    "MIPS32 Little-Endian",
+    "armel":     "ARMv5 Little-Endian",
+    "cortex-m3": "ARM Cortex-M3 (Zephyr)",
+    "riscv32":   "RISC-V 32-bit",
 }
 
 def print_header():

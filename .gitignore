@@ -8,6 +8,7 @@ vmlinuz-*
 
 # Runtime
 logs/
+overlays/
 *.log
 *.pid
 *.leases

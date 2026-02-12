@@ -48,7 +48,7 @@ physical devices plugged into a real switch.
 
 | Firmware ID | Name | CPU | OS / Stack | QEMU Board | Protocol / Port | Creds | Boot |
 |---|---|---|---|---|---|---|---|
-| `dvrf_v03` | Damn Vulnerable Router Firmware v0.3 | MIPS 4Kc (32-bit LE) | Debian Linux | Malta | SSH, HTTP | `root:password` | ~60-90 s |
+| `dvrf_v03` | Damn Vulnerable Router Firmware v0.3 | MIPS 4Kc (32-bit LE) | Debian Linux | Malta | SSH, HTTP | `root:root` | ~60-90 s |
 | `debian_armel` | Debian Wheezy ARM | ARMv5TE (32-bit LE) | Debian Linux | VersatilePB | SSH, HTTP | `root:root` | ~60-90 s |
 | `zephyr_echo` | Industrial Sensor (Echo) | ARM Cortex-M3 | Zephyr RTOS 3.7 | lm3s6965evb | TCP+UDP echo :4242 | None | ~3-6 s |
 | `zephyr_coap` | Smart Meter (CoAP) | ARM Cortex-M3 | Zephyr RTOS 3.7 | lm3s6965evb | CoAP UDP :5683 | None | ~5-8 s |

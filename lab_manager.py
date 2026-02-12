@@ -15,6 +15,7 @@ from scan_library import LIBRARY_DIR, scan
 
 BRIDGE = "br0"
 LOG_DIR = Path(__file__).resolve().parent / "logs"
+OVERLAY_DIR = Path(__file__).resolve().parent / "overlays"
 LEASE_FILE = Path("/var/lib/misc/dnsmasq-br0.leases")
 
 logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
@@ -75,7 +76,22 @@ class LabManager:
         raise ValueError(f"Firmware '{firmware_id}' not found in library")
 
     @staticmethod
-    def _build_qemu_cmd(fw: dict, tap: str, mac: str) -> list[str]:
+    def _create_overlay(base_rootfs: str, run_id: str) -> str:
+        """Create a qcow2 copy-on-write overlay so multiple VMs can
+        share the same base image without write-lock conflicts."""
+        OVERLAY_DIR.mkdir(parents=True, exist_ok=True)
+        overlay = OVERLAY_DIR / f"{run_id}.qcow2"
+        _run([
+            "qemu-img", "create", "-f", "qcow2",
+            "-b", str(Path(base_rootfs).resolve()),
+            "-F", "qcow2",
+            str(overlay),
+        ])
+        return str(overlay)
+
+    @staticmethod
+    def _build_qemu_cmd(fw: dict, tap: str, mac: str,
+                        overlay_path: str | None = None) -> list[str]:
         fw_dir = Path(fw["_dir"])
         kernel = str(fw_dir / fw["kernel"])
         rootfs = str(fw_dir / fw["rootfs"]) if fw.get("rootfs") else None
@@ -83,12 +99,15 @@ class LabManager:
         machine = fw.get("qemu_machine", "malta")
         mem = fw.get("memory", "256")
 
+        # Use the overlay instead of the base image if provided
+        drive_file = overlay_path or rootfs
+
         # Architecture-specific defaults
         ARCH_PROFILES = {
             "mipsel": {
                 "qemu_bin": "qemu-system-mipsel",
                 "append": "root=/dev/sda1 console=ttyS0",
-                "drive": ["-drive", f"file={rootfs},format=qcow2"],
+                "drive": ["-drive", f"file={drive_file},format=qcow2"],
                 "net": [
                     "-netdev", f"tap,id=net0,ifname={tap},script=no,downscript=no",
                     "-device", f"e1000,netdev=net0,mac={mac}",
@@ -97,7 +116,7 @@ class LabManager:
             "armel": {
                 "qemu_bin": "qemu-system-arm",
                 "append": "root=/dev/sda1 console=ttyAMA0",
-                "drive": ["-drive", f"file={rootfs},format=qcow2"],
+                "drive": ["-drive", f"file={drive_file},format=qcow2"],
                 "net": [
                     "-net", f"nic,macaddr={mac}",
                     "-net", f"tap,ifname={tap},script=no,downscript=no",
@@ -203,7 +222,15 @@ class LabManager:
             raise FileNotFoundError(f"Rootfs missing: {fw_dir / fw['rootfs']}")
 
         self._create_tap(tap)
-        cmd = self._build_qemu_cmd(fw, tap, mac)
+
+        # Create a per-instance qcow2 overlay for Linux firmware so
+        # multiple VMs can share the same base image concurrently.
+        overlay_path = None
+        if fw.get("rootfs"):
+            overlay_path = self._create_overlay(
+                str(fw_dir / fw["rootfs"]), run_id)
+
+        cmd = self._build_qemu_cmd(fw, tap, mac, overlay_path)
 
         LOG_DIR.mkdir(parents=True, exist_ok=True)
         log_path = LOG_DIR / f"qemu-{run_id}.log"
@@ -233,6 +260,7 @@ class LabManager:
             "log": str(log_path),
             "_proc": proc,
             "_log_fh": log_file,
+            "_overlay": overlay_path,
         }
         log.info("Spawned %s  PID=%d  TAP=%s  MAC=%s", run_id, proc.pid, tap, mac)
         return run_id
@@ -255,6 +283,14 @@ class LabManager:
 
         inst["_log_fh"].close()
         self._destroy_tap(inst["tap"])
+
+        # Remove the per-instance qcow2 overlay
+        if inst.get("_overlay"):
+            try:
+                Path(inst["_overlay"]).unlink(missing_ok=True)
+            except OSError:
+                pass
+
         log.info("Cleaned up %s", run_id)
         return True
 
