@@ -67,8 +67,8 @@ of ARM-based IoT sensors, cameras, and embedded controllers.
 ### 1. Clone the repository
 
 ```bash
-git clone https://github.com/Adelsamir01/llm_iot_sec.git
-cd llm_iot_sec
+git clone https://github.com/Adelsamir01/iot_vlab.git
+cd iot_vlab
 ```
 
 ### 2. Install Python dependencies
