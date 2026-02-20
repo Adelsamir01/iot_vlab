@@ -10,8 +10,10 @@ Requires: sudo (for TAP interface management and QEMU networking).
 Usage:    sudo python3 demo_network.py
 """
 
+import argparse
 import os
 import signal
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -136,6 +138,22 @@ def print_device_table(manager: LabManager, roles: dict[str, str]):
 # ── Main ─────────────────────────────────────────────────────────────────
 
 def main():
+    parser = argparse.ArgumentParser(
+        description="Spawn a multi-architecture IoT network with optional HMI simulator"
+    )
+    parser.add_argument(
+        "--hmi",
+        action="store_true",
+        help="Start Industrial HMI Simulator for background traffic"
+    )
+    parser.add_argument(
+        "--hmi-interval",
+        type=float,
+        default=2.0,
+        help="Mean polling interval for HMI simulator (default: 2.0 seconds)"
+    )
+    args = parser.parse_args()
+
     if os.geteuid() != 0:
         print("[ERROR] This script must be run with sudo.")
         sys.exit(1)
@@ -150,11 +168,31 @@ def main():
 
     manager = LabManager()
     roles: dict[str, str] = {}  # run_id → role label
+    hmi_process = None
+
+    # Start HMI simulator if requested
+    if args.hmi:
+        print("[*] Starting Industrial HMI Simulator...")
+        script_path = Path(__file__).resolve().parent / "industrial_hmi_sim.py"
+        hmi_process = subprocess.Popen(
+            [sys.executable, str(script_path), "--interval", str(args.hmi_interval)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        print("[*] HMI Simulator started (PID: {})".format(hmi_process.pid))
+        time.sleep(1)  # Give it a moment to start
 
     # Clean shutdown on Ctrl+C
     def shutdown(sig, frame):
         print("\n\n[*] Shutting down all devices...")
         manager.reset_lab()
+        if hmi_process:
+            print("[*] Stopping HMI Simulator...")
+            hmi_process.terminate()
+            try:
+                hmi_process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                hmi_process.kill()
         print("[*] All devices stopped. Network clean.")
         sys.exit(0)
     signal.signal(signal.SIGINT, shutdown)
@@ -194,6 +232,8 @@ def main():
     print_topology(manager, roles)
     print_device_table(manager, roles)
 
+    if args.hmi:
+        print("  [*] Industrial HMI Simulator is running (background traffic active)")
     print("  Press Ctrl+C to tear down the network and exit.\n")
 
     # ── Keep alive ───────────────────────────────────────────────────────

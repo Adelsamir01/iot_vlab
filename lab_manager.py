@@ -14,9 +14,11 @@ from typing import Optional
 from scan_library import LIBRARY_DIR, scan
 
 BRIDGE = "br0"
+BRIDGE_INTERNAL = "br_internal"
 LOG_DIR = Path(__file__).resolve().parent / "logs"
 OVERLAY_DIR = Path(__file__).resolve().parent / "overlays"
 LEASE_FILE = Path("/var/lib/misc/dnsmasq-br0.leases")
+LEASE_FILE_INTERNAL = Path("/var/lib/misc/dnsmasq-br_internal.leases")
 
 logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 log = logging.getLogger("lab_manager")
@@ -43,7 +45,7 @@ class LabManager:
             random.randint(0, 0xFF),
         )
 
-    def _get_next_tap(self) -> str:
+    def _get_next_tap(self, suffix: str = "") -> str:
         """Find the lowest unused tap<N> interface."""
         existing = set()
         net_dir = Path("/sys/class/net")
@@ -55,13 +57,27 @@ class LabManager:
         idx = 0
         while idx in existing:
             idx += 1
-        return f"tap{idx}"
+        return f"tap{idx}{suffix}"
 
     @staticmethod
-    def _create_tap(tap: str) -> None:
+    def _create_tap(tap: str, bridge: str = BRIDGE) -> None:
+        """Create a TAP interface and attach it to the specified bridge."""
         _run(["sudo", "ip", "tuntap", "add", "dev", tap, "mode", "tap"])
-        _run(["sudo", "ip", "link", "set", tap, "master", BRIDGE])
+        _run(["sudo", "ip", "link", "set", tap, "master", bridge])
         _run(["sudo", "ip", "link", "set", tap, "up"])
+    
+    @staticmethod
+    def _ensure_internal_bridge() -> None:
+        """Ensure br_internal bridge exists and is configured."""
+        # Check if bridge exists
+        result = _run(["ip", "link", "show", BRIDGE_INTERNAL], check=False)
+        if result.returncode != 0:
+            log.info("Creating internal bridge %s...", BRIDGE_INTERNAL)
+            _run(["sudo", "ip", "link", "add", "name", BRIDGE_INTERNAL, "type", "bridge"])
+            # Assign IP to internal bridge (different subnet: 192.168.200.0/24)
+            _run(["sudo", "ip", "addr", "add", "192.168.200.1/24", "dev", BRIDGE_INTERNAL])
+            _run(["sudo", "ip", "link", "set", BRIDGE_INTERNAL, "up"])
+            log.info("Internal bridge %s created and configured", BRIDGE_INTERNAL)
 
     @staticmethod
     def _destroy_tap(tap: str) -> None:
@@ -91,7 +107,8 @@ class LabManager:
 
     @staticmethod
     def _build_qemu_cmd(fw: dict, tap: str, mac: str,
-                        overlay_path: str | None = None) -> list[str]:
+                        overlay_path: str | None = None,
+                        tap_int: str | None = None, mac_int: str | None = None) -> list[str]:
         fw_dir = Path(fw["_dir"])
         kernel = str(fw_dir / fw["kernel"])
         rootfs = str(fw_dir / fw["rootfs"]) if fw.get("rootfs") else None
@@ -108,19 +125,13 @@ class LabManager:
                 "qemu_bin": "qemu-system-mipsel",
                 "append": "root=/dev/sda1 console=ttyS0",
                 "drive": ["-drive", f"file={drive_file},format=qcow2"],
-                "net": [
-                    "-netdev", f"tap,id=net0,ifname={tap},script=no,downscript=no",
-                    "-device", f"e1000,netdev=net0,mac={mac}",
-                ],
+                "supports_multi": True,
             },
             "armel": {
                 "qemu_bin": "qemu-system-arm",
                 "append": "root=/dev/sda1 console=ttyAMA0",
                 "drive": ["-drive", f"file={drive_file},format=qcow2"],
-                "net": [
-                    "-net", f"nic,macaddr={mac}",
-                    "-net", f"tap,ifname={tap},script=no,downscript=no",
-                ],
+                "supports_multi": True,
             },
             "cortex-m3": {
                 "qemu_bin": "qemu-system-arm",
@@ -150,18 +161,63 @@ class LabManager:
         if profile is None:
             raise ValueError(f"Unsupported arch: {arch}")
 
+        # Build network configuration (single or multi-homed)
+        if tap_int and mac_int and profile.get("supports_multi"):
+            # Multi-homed: two network interfaces
+            if arch == "mipsel":
+                net_config = [
+                    "-netdev", f"tap,id=net0,ifname={tap},script=no,downscript=no",
+                    "-device", f"e1000,netdev=net0,mac={mac}",
+                    "-netdev", f"tap,id=net1,ifname={tap_int},script=no,downscript=no",
+                    "-device", f"e1000,netdev=net1,mac={mac_int}",
+                ]
+            elif arch == "armel":
+                net_config = [
+                    "-net", f"nic,macaddr={mac}",
+                    "-net", f"tap,ifname={tap},script=no,downscript=no",
+                    "-net", f"nic,macaddr={mac_int}",
+                    "-net", f"tap,ifname={tap_int},script=no,downscript=no",
+                ]
+            else:
+                raise ValueError(f"Multi-homed not supported for arch: {arch}")
+        else:
+            # Single interface
+            if arch == "mipsel":
+                net_config = [
+                    "-netdev", f"tap,id=net0,ifname={tap},script=no,downscript=no",
+                    "-device", f"e1000,netdev=net0,mac={mac}",
+                ]
+            elif arch == "armel":
+                net_config = [
+                    "-net", f"nic,macaddr={mac}",
+                    "-net", f"tap,ifname={tap},script=no,downscript=no",
+                ]
+            else:
+                # cortex-m3 and riscv32 handled separately below
+                net_config = []
+
         # MCU / bare-metal targets (no rootfs, no -append)
         if arch == "cortex-m3":
+            # cortex-m3 doesn't support multi-homed (single Stellaris MAC)
+            net_config = [
+                "-net", "nic,model=stellaris",
+                "-net", f"tap,ifname={tap},script=no,downscript=no",
+            ]
             cmd = [
                 profile["qemu_bin"],
                 "-M", machine,
                 "-kernel", kernel,
                 "-nographic",
-                *profile["net"],
+                *net_config,
             ]
             return cmd
 
         if arch == "riscv32":
+            # riscv32 doesn't support multi-homed yet
+            net_config = [
+                "-netdev", f"tap,id=net0,ifname={tap},script=no,downscript=no",
+                "-device", f"virtio-net-device,netdev=net0,mac={mac}",
+            ]
             cmd = [
                 profile["qemu_bin"],
                 "-M", machine,
@@ -169,7 +225,7 @@ class LabManager:
                 "-m", "256",
                 "-kernel", kernel,
                 "-nographic",
-                *profile["net"],
+                *net_config,
             ]
             return cmd
 
@@ -181,7 +237,7 @@ class LabManager:
             "-nographic",
             "-append", profile["append"],
             "-m", str(mem),
-            *profile["net"],
+            *net_config,
         ]
 
         # Optional initrd (required by some compressed kernels)
@@ -199,6 +255,7 @@ class LabManager:
     def spawn_instance(self, firmware_id: str) -> str:
         """Boot a new QEMU instance. Returns a unique run_id."""
         fw = self._load_firmware(firmware_id)
+        multi_homed = fw.get("multi_homed", False)
 
         # Stellaris lm3s6965evb shares a single hardcoded MAC across all
         # cortex-m3 instances — only one may be on the bridge at a time.
@@ -212,6 +269,18 @@ class LabManager:
 
         tap = self._get_next_tap()
         mac = self.STELLARIS_MAC if fw["arch"] == "cortex-m3" else self._generate_mac()
+        
+        # Multi-homed setup: create second TAP and MAC
+        tap_int = None
+        mac_int = None
+        if multi_homed:
+            # Ensure internal bridge exists
+            LabManager._ensure_internal_bridge()
+            tap_int = self._get_next_tap("_int")
+            mac_int = self._generate_mac()
+            self._create_tap(tap_int, BRIDGE_INTERNAL)
+            log.info("Multi-homed device: external=%s, internal=%s", tap, tap_int)
+        
         run_id = f"{firmware_id}_{uuid.uuid4().hex[:8]}"
 
         # Validate files exist before touching the network
@@ -230,7 +299,7 @@ class LabManager:
             overlay_path = self._create_overlay(
                 str(fw_dir / fw["rootfs"]), run_id)
 
-        cmd = self._build_qemu_cmd(fw, tap, mac, overlay_path)
+        cmd = self._build_qemu_cmd(fw, tap, mac, overlay_path, tap_int, mac_int)
 
         LOG_DIR.mkdir(parents=True, exist_ok=True)
         log_path = LOG_DIR / f"qemu-{run_id}.log"
@@ -246,6 +315,8 @@ class LabManager:
         except Exception:
             log_file.close()
             self._destroy_tap(tap)
+            if tap_int:
+                self._destroy_tap(tap_int)
             raise
 
         self.active_instances[run_id] = {
@@ -257,12 +328,19 @@ class LabManager:
             "tap": tap,
             "mac": mac,
             "ip": "pending",
+            "ip_internal": "pending" if multi_homed else None,
+            "tap_internal": tap_int,
+            "mac_internal": mac_int,
+            "multi_homed": multi_homed,
             "log": str(log_path),
             "_proc": proc,
             "_log_fh": log_file,
             "_overlay": overlay_path,
         }
-        log.info("Spawned %s  PID=%d  TAP=%s  MAC=%s", run_id, proc.pid, tap, mac)
+        log_msg = f"Spawned {run_id}  PID={proc.pid}  TAP={tap}  MAC={mac}"
+        if multi_homed:
+            log_msg += f"  TAP_INT={tap_int}  MAC_INT={mac_int}"
+        log.info(log_msg)
         return run_id
 
     def stop_instance(self, run_id: str) -> bool:
@@ -283,6 +361,10 @@ class LabManager:
 
         inst["_log_fh"].close()
         self._destroy_tap(inst["tap"])
+        
+        # Clean up internal TAP if multi-homed
+        if inst.get("tap_internal"):
+            self._destroy_tap(inst["tap_internal"])
 
         # Remove the per-instance qcow2 overlay
         if inst.get("_overlay"):
@@ -306,7 +388,7 @@ class LabManager:
         topo = []
         for inst in self.active_instances.values():
             alive = inst["_proc"].poll() is None
-            topo.append({
+            entry = {
                 "id": inst["id"],
                 "firmware_id": inst["firmware_id"],
                 "arch": inst["arch"],
@@ -316,20 +398,41 @@ class LabManager:
                 "mac": inst["mac"],
                 "ip": inst["ip"],
                 "alive": alive,
-            })
+            }
+            # Add multi-homed fields if applicable
+            if inst.get("multi_homed"):
+                entry["ip_internal"] = inst.get("ip_internal", "pending")
+                entry["tap_internal"] = inst.get("tap_internal")
+                entry["mac_internal"] = inst.get("mac_internal")
+            topo.append(entry)
         return topo
 
     def refresh_ips(self) -> None:
-        """Scan dnsmasq leases and update guest IPs."""
-        if not LEASE_FILE.exists():
-            return
-        leases = LEASE_FILE.read_text().splitlines()
-        for inst in self.active_instances.values():
-            if inst["ip"] not in ("pending", "unknown"):
-                continue
-            for line in leases:
-                parts = line.split()
-                if len(parts) >= 3 and parts[1].lower() == inst["mac"].lower():
-                    inst["ip"] = parts[2]
-                    log.info("%s acquired IP %s", inst["id"], parts[2])
-                    break
+        """Scan dnsmasq leases and update guest IPs (both external and internal)."""
+        # Refresh external IPs from br0
+        if LEASE_FILE.exists():
+            leases = LEASE_FILE.read_text().splitlines()
+            for inst in self.active_instances.values():
+                if inst["ip"] not in ("pending", "unknown"):
+                    continue
+                for line in leases:
+                    parts = line.split()
+                    if len(parts) >= 3 and parts[1].lower() == inst["mac"].lower():
+                        inst["ip"] = parts[2]
+                        log.info("%s acquired external IP %s", inst["id"], parts[2])
+                        break
+        
+        # Refresh internal IPs from br_internal for multi-homed devices
+        if LEASE_FILE_INTERNAL.exists():
+            leases_int = LEASE_FILE_INTERNAL.read_text().splitlines()
+            for inst in self.active_instances.values():
+                if not inst.get("multi_homed") or not inst.get("mac_internal"):
+                    continue
+                if inst.get("ip_internal") not in ("pending", "unknown", None):
+                    continue
+                for line in leases_int:
+                    parts = line.split()
+                    if len(parts) >= 3 and parts[1].lower() == inst["mac_internal"].lower():
+                        inst["ip_internal"] = parts[2]
+                        log.info("%s acquired internal IP %s", inst["id"], parts[2])
+                        break
