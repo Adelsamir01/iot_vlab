@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>IoT Virtual Lab — Real-time Dashboard</title>
+    <!-- Include Vis.js Network -->
+    <script type="text/javascript" src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
+    <!-- Modern font -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+    <div class="header">
+        <h1>iot<span>_vlab</span> Control Center</h1>
+        <div class="status-indicator">
+            <span class="pulse"></span> System Active
+        </div>
+    </div>
+    
+    <div class="dashboard-container">
+        <!-- Left Panel: Logs -->
+        <div class="panel log-panel">
+            <div class="panel-header">
+                <h2>Terminal Events</h2>
+                <div class="badges">
+                    <span class="badge" id="log-count">0 messages</span>
+                </div>
+            </div>
+            <div class="panel-body">
+                 <div id="log-output" class="log-output">
+                     <!-- Logs injected here -->
+                 </div>
+            </div>
+        </div>
+        
+        <!-- Right Panel: Topology Visualization -->
+        <div class="panel topo-panel">
+            <div class="panel-header">
+                <h2>Network Topology</h2>
+                <div class="badges">
+                    <span class="badge" id="node-count">0 nodes</span>
+                </div>
+            </div>
+            <div class="panel-body">
+                <!-- Vis.js container -->
+                <div id="network"></div>
+                
+                <!-- Overlay for selected node details -->
+                <div id="node-details" class="overlay hidden">
+                    <h3 id="detail-title">Device ID</h3>
+                    <p><strong>IP:</strong> <span id="detail-ip"></span></p>
+                    <p><strong>Firmware:</strong> <span id="detail-firmware"></span></p>
+                    <p><strong>Status:</strong> <span id="detail-status"></span></p>
+                    <button class="danger-btn" id="kill-btn">Kill Device</button>
+                    <button class="secondary-btn" id="close-overlay">Close</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="/app.js"></script>
+</body>
+</html>
