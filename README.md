@@ -182,7 +182,30 @@ python3 verify_lab.py
 
 ## Usage
 
-### Option A: Run the demo (easiest)
+### Option A: Interactive wizard + Web Dashboard (recommended)
+
+An interactive CLI "wizard" that provisions devices and starts a live web dashboard.
+
+```bash
+# From the repo root
+cd iot_vlab
+
+# Run the interactive lab (requires the network setup + firmware downloads)
+sudo ./setup_network.sh        # if not already done
+./download_firmware.sh         # if not already done
+
+sudo python3 interactive_lab.py
+```
+
+The script will:
+
+- Ask how many MIPS routers (`dvrf_v03`) and ARM gateways (`debian_armel`) to spawn
+- Optionally include a Cortex-M3 smart meter (`zephyr_coap`)
+- Start a Flask web UI on `http://localhost:5000` showing live topology and logs
+
+Press **Ctrl+C** in the terminal to shut everything down and clean up QEMU instances.
+
+### Option B: Run the demo (scripted scenario)
 
 ```bash
 sudo python3 demo_network.py
@@ -191,7 +214,7 @@ sudo python3 demo_network.py
 Edit the `NETWORK` list in `demo_network.py` to customise which devices
 to spawn.  Press **Ctrl+C** to cleanly shut down.
 
-### Option B: Use the REST API
+### Option C: Use the REST API
 
 ```bash
 sudo python3 lab_api.py
@@ -222,7 +245,7 @@ curl -s -X POST http://localhost:5000/kill/<run_id>
 curl -s -X POST http://localhost:5000/reset_lab
 ```
 
-### Option C: Talk to MCU devices directly
+### Option D: Talk to MCU devices directly
 
 Once a device has acquired a DHCP lease (check `GET /topology` for the
 IP):
