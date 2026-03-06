@@ -197,15 +197,26 @@ sudo ./setup_network.sh        # if not already done
 sudo python3 interactive_lab.py
 ```
 
-The script will:
+The CLI wizard will ask:
+- Which topology to spin up:
+  1. **Custom / Star Architecture:** Let's you specify exactly how many routers and gateways you want.
+  2. **15-Node Realistic Mesh Topology:** Creates an interconnected mesh network featuring `lab_manager`'s `MeshTrafficGenerator` running dynamically in the background. Connections in the GUI will live-update to reflect actual packets flowing.
+  3. **Purdue Model / Segmented IIoT Architecture:** Boots a DMZ router, a Multi-Homed Gateway navigating two bridges (`br0` and `br_internal`), and an isolated cell zone strictly on `br_internal` consisting of a CoAP meter and 3 general sensor endpoints. 
+     - *Justification:* In a real-world Industrial IoT (IIoT) setting, devices do not reside on a flat, easily accessible subnet. They are isolated into specific zones (e.g., Enterprise, DMZ, Manufacturing, Cell/Area) dictated by the Purdue Enterprise Reference Architecture (PERA). By explicitly selecting this topology, agents or users must navigate a multi-homed gateway separating the internal operational technology (OT) network from the external-facing network, realistically testing lateral movement and pivoting capabilities.
+  4. **Edge-Fog-Cloud (Three-Tier) IIoT Architecture:** Boots a centralized Cloud/Enterprise layer (2 remote routers), a thick distributed Fog layer (4 multi-homed edge gateways), and an expansive strictly-internal Edge layer (a Modbus PLC actuator and 3 sensor endpoints).
+     - *Justification:* This architecture is widely recognized in modern IIoT and Fog Computing literature (e.g., Bonomi et al., OpenFog Consortium). It addresses latency, bandwidth, and security constraints by moving compute closer to the edge. In this scenario, agents can test data aggregation, edge-level security, or localized exploitation within the Fog nodes before pivoting up to the Cloud backend or down to the physical Edge devices.
+- Whether to apply realistic network noise (latency, jitter, and packet loss using `tc`).
+- Whether to enable background HMI traffic (Modbus & CoAP background noise generation using poisson distribution) to pollute the packet captures and test agent robustness.
 
-- Ask how many MIPS routers (`dvrf_v03`) and ARM gateways (`debian_armel`) to spawn
-- Optionally include a Cortex-M3 smart meter (`zephyr_coap`)
-- Start a Flask web UI on `http://localhost:5000` showing live topology and logs
+After answering, it will start provisioning devices and spin up a web server.
+**Open your browser to `http://localhost:5000`** to view the live Interactive Dashboard, which includes:
+- Live streaming Terminal / QEMU logs (left panel)
+- Interactive live-updating Vis.js network topology (right panel)
+- Node interaction (click a visual node for device details, such as IP, MAC, PID, and an option to kill the device to simulate it going down).
 
-Press **Ctrl+C** in the terminal to shut everything down and clean up QEMU instances.
+Press **Ctrl+C** in the terminal to cleanly shut down all running instances and the dashboard server.
 
-### Option B: Run the demo (scripted scenario)
+### Option B: Run the demo script
 
 ```bash
 sudo python3 demo_network.py
@@ -486,116 +497,25 @@ bash test_realism_features.sh
 
 ---
 
-## Mesh Network Visualization
+## Advanced & Standalone Realism Features
 
-The iot_vlab includes a **Mesh Network Generator** that creates a network of 15 diverse IoT nodes with realistic mesh connectivity and live visualization.
-
-### Quick Start
-
-```bash
-# Install matplotlib for visualization (optional)
-pip3 install matplotlib
-
-# Start mesh network with GUI visualization
-sudo python3 mesh_network.py
-
-# ASCII-only mode (no GUI)
-sudo python3 mesh_network.py --ascii-only
-```
-
-### Features
-
-- **15 Diverse Nodes**: Mix of routers, gateways, sensors, cameras, controllers, and MCU devices
-- **Mesh Topology**: Each node connects to 2-4 other nodes (realistic mesh network)
-- **Real Traffic**: Actual TCP/UDP connections between nodes
-- **Live Visualization**: Real-time network graph showing:
-  - Node positions and types (color-coded)
-  - Active connections (edges)
-  - Traffic flow intensity
-  - Statistics overlay
-
-### Network Composition
-
-| Device Type | Count | Firmware | Architecture |
-|---|---|---|---|
-| Router | 3 | dvrf_v03 | MIPS Linux |
-| Gateway | 4 | debian_armel | ARM Linux |
-| Sensor Hub | 2 | debian_armel | ARM Linux |
-| Camera | 2 | debian_armel | ARM Linux |
-| Controller | 3 | debian_armel | ARM Linux |
-| Smart Meter | 1 | zephyr_coap | ARM Cortex-M3 |
-| **Total** | **15** | | |
-
-### Visualization Modes
-
-**GUI Mode (matplotlib):**
-- Interactive network graph
-- Color-coded nodes by device type
-- Animated traffic flows
-- Real-time statistics
-- Connection strength visualization
-
-**ASCII Mode:**
-- Terminal-based topology display
-- Connection details per node
-- Traffic statistics
-- Mesh connectivity summary
-
-### Traffic Patterns
-
-The mesh network generates realistic traffic:
-- **SSH connections** (TCP 22) between Linux devices
-- **CoAP requests** (UDP 5683) to smart meter
-- **Modbus/TCP** (port 502) for industrial devices
-- **Echo server** (port 4242) for testing
-- Each node maintains 2-4 active connections (mesh topology)
-
-### Usage Examples
-
-```bash
-# Full GUI visualization
-sudo python3 mesh_network.py
-
-# ASCII-only (no GUI dependencies)
-sudo python3 mesh_network.py --ascii-only
-
-# Disable visualization entirely
-sudo python3 mesh_network.py --no-viz
-```
-
-Press **Ctrl+C** to stop the mesh network and clean up all devices.
-
----
-
-## Running Realistic Experiments
-
-The iot_vlab now supports **Industrial Realism** features to simulate real-world factory floor conditions. These features ensure that LLM agents tested against the lab must prove their "Stealth" and "Resilience" claims under realistic constraints.
+The `interactive_lab.py` wizard automatically orchestrates network impairments, background HMI traffic, and mesh network topologies. However, you can also run these underlying engines standalone for highly customized or legacy `demo_network.py` experiments.
 
 ### Background Traffic (HMI Simulator)
 
-The Industrial HMI Simulator generates legitimate background traffic to prevent agents from operating in a silent subnet.
+The Industrial HMI Simulator generates legitimate legitimate UDP/TCP background noise.
 
-**Start the HMI Simulator:**
+**Run standalone:**
 ```bash
 sudo python3 industrial_hmi_sim.py [--interval MEAN_SECONDS]
 ```
+The simulator polls devices on `192.168.100.0/24` using a Poisson distribution for realistic, non-rhythmic traffic patterns.
 
-**Integration with demo_network.py:**
-```bash
-sudo python3 demo_network.py --hmi [--hmi-interval 2.0]
-```
+### Network Impairments (Traffic Control)
 
-The simulator:
-- Polls devices on `192.168.100.0/24` for Modbus (TCP 502) and CoAP (UDP 5683)
-- Uses Poisson distribution for polling intervals (non-rhythmic, realistic traffic)
-- Generates ~5+ packets per second by default
-- Can be run standalone or integrated with the demo network
+Simulate "dirty" networking found in real industrial sites. This is what the interactive wizard calls under the hood when realism is enabled.
 
-### Network Impairments
-
-Simulate "dirty" networking found in old industrial sites using `tc` (Traffic Control) and `netem`.
-
-**Apply packet loss:**
+**Apply packet loss manually:**
 ```bash
 sudo ./impair_network.sh --loss 5
 ```
@@ -613,145 +533,6 @@ sudo ./impair_network.sh --clear
 **Check current status:**
 ```bash
 sudo ./impair_network.sh --status
-```
-
-The script automatically verifies that `br_netfilter` module is loaded before applying changes.
-
-### Segmented Gateway Architecture (Purdue Model)
-
-Implement network segmentation by configuring multi-homed gateways with two network interfaces:
-
-1. **External interface** (`tapN`): Connected to `br0` (192.168.100.0/24) - Agent/External side
-2. **Internal interface** (`tapN_int`): Connected to `br_internal` (192.168.200.0/24) - Sensor/Internal side
-
-**To enable multi-homed support:**
-
-Add `"multi_homed": true` to a firmware's `config.json`:
-
-```json
-{
-    "id": "my_gateway",
-    "name": "Multi-Homed Gateway",
-    "arch": "armel",
-    "multi_homed": true,
-    ...
-}
-```
-
-When spawned, the device will:
-- Create two TAP interfaces (external and internal)
-- Connect to both `br0` and `br_internal` bridges
-- Receive IPs on both networks (visible in `/topology` API endpoint)
-
-**API Response for Multi-Homed Devices:**
-```json
-{
-    "id": "gateway_abc123",
-    "firmware_id": "my_gateway",
-    "ip": "192.168.100.15",
-    "ip_internal": "192.168.200.10",
-    "tap": "tap0",
-    "tap_internal": "tap0_int",
-    "mac": "52:54:00:12:34:56",
-    "mac_internal": "52:54:00:78:90:ab",
-    "multi_homed": true,
-    ...
-}
-```
-
-This forces agents to pivot through the gateway to reach internal sensors, testing their ability to handle network segmentation.
-
-### Automated Realism Verification
-
-Verify that your lab environment has realistic industrial conditions:
-
-```bash
-sudo python3 verify_realism.py
-```
-
-**Check specific components:**
-```bash
-# Only check HMI traffic
-sudo python3 verify_realism.py --hmi-only
-
-# Only check network impairments
-sudo python3 verify_realism.py --impair-only
-
-# Only check segmentation
-sudo python3 verify_realism.py --segmentation-only
-```
-
-The verification script checks:
-1. **HMI Background Traffic**: Verifies ≥5 packets/sec on `br0` (Modbus/CoAP)
-2. **Network Impairments**: Confirms `tc netem` rules are active on `br0`
-3. **Gateway Segmentation**: Ensures internal sensors are not directly reachable from the host
-
-### Mesh Network Visualization
-
-Create a mesh network of 15 diverse nodes with real traffic and live visualization:
-
-```bash
-# Start mesh network with GUI visualization (requires matplotlib)
-sudo python3 mesh_network.py
-
-# ASCII-only mode (no GUI required)
-sudo python3 mesh_network.py --ascii-only
-
-# Disable visualization entirely
-sudo python3 mesh_network.py --no-viz
-```
-
-**Features:**
-- **15 Diverse Nodes**: Mix of routers, gateways, sensors, cameras, controllers, and MCU devices
-- **Mesh Connectivity**: Each node connects to 2-4 other nodes (realistic mesh topology)
-- **Real Traffic**: Actual TCP/UDP connections between nodes with protocol-specific ports
-- **Live Visualization**: Real-time network graph showing nodes, connections, and traffic flows
-- **Traffic Statistics**: Track packets sent/received and active connections per node
-
-**Visualization:**
-- **GUI Mode**: Interactive matplotlib graph with:
-  - Color-coded nodes by device type
-  - Animated traffic flows between connected nodes
-  - Real-time statistics overlay
-  - Connection strength visualization
-- **ASCII Mode**: Terminal-based topology display with connection details
-
-**Network Composition:**
-- 3x Routers (MIPS Linux - dvrf_v03)
-- 4x Gateways (ARM Linux - debian_armel)
-- 2x Sensor Hubs (ARM Linux)
-- 2x Cameras (ARM Linux)
-- 3x Controllers (ARM Linux)
-- 1x Smart Meter (CoAP MCU - zephyr_coap)
-
-**Traffic Patterns:**
-- SSH connections (port 22) between Linux devices
-- CoAP requests (UDP 5683) to smart meter
-- Modbus/TCP (port 502) for industrial devices
-- Echo server (port 4242) for testing
-- Mesh topology ensures multiple paths between nodes
-
-### Example: Full Realistic Experiment Setup
-
-```bash
-# 1. Set up network infrastructure
-sudo ./setup_network.sh
-
-# 2. Apply network impairments
-sudo ./impair_network.sh --loss 5
-sudo ./impair_network.sh --jitter 50 20
-
-# 3. Start demo network with HMI simulator
-sudo python3 demo_network.py --hmi
-
-# OR start mesh network with visualization
-sudo python3 mesh_network.py
-
-# 4. In another terminal, verify realism
-sudo python3 verify_realism.py
-
-# 5. Test your LLM agent against the realistic environment
-# (Agent must handle background traffic, impairments, and segmentation)
 ```
 
 ### Safety Notes

@@ -252,10 +252,13 @@ class LabManager:
     # Stellaris lm3s6965evb SoC hardcodes this MAC in its Ethernet controller
     STELLARIS_MAC = "00:00:94:00:83:00"
 
-    def spawn_instance(self, firmware_id: str) -> str:
+    def spawn_instance(self, firmware_id: str, internal_only: bool = False) -> str:
         """Boot a new QEMU instance. Returns a unique run_id."""
         fw = self._load_firmware(firmware_id)
         multi_homed = fw.get("multi_homed", False)
+        
+        if multi_homed and internal_only:
+            raise ValueError("Instance cannot be both multi_homed and internal_only")
 
         # Stellaris lm3s6965evb shares a single hardcoded MAC across all
         # cortex-m3 instances — only one may be on the bridge at a time.
@@ -290,7 +293,9 @@ class LabManager:
         if fw.get("rootfs") and not (fw_dir / fw["rootfs"]).is_file():
             raise FileNotFoundError(f"Rootfs missing: {fw_dir / fw['rootfs']}")
 
-        self._create_tap(tap)
+        self._create_tap(tap, bridge=BRIDGE_INTERNAL if internal_only else BRIDGE)
+        if internal_only:
+            LabManager._ensure_internal_bridge()
 
         # Create a per-instance qcow2 overlay for Linux firmware so
         # multiple VMs can share the same base image concurrently.
@@ -336,8 +341,11 @@ class LabManager:
             "_proc": proc,
             "_log_fh": log_file,
             "_overlay": overlay_path,
+            "bridge": BRIDGE_INTERNAL if internal_only else BRIDGE,
         }
         log_msg = f"Spawned {run_id}  PID={proc.pid}  TAP={tap}  MAC={mac}"
+        if internal_only:
+            log_msg += " (INTERNAL)"
         if multi_homed:
             log_msg += f"  TAP_INT={tap_int}  MAC_INT={mac_int}"
         log.info(log_msg)
@@ -398,6 +406,7 @@ class LabManager:
                 "mac": inst["mac"],
                 "ip": inst["ip"],
                 "alive": alive,
+                "bridge": inst.get("bridge", "br0"),
             }
             # Add multi-homed fields if applicable
             if inst.get("multi_homed"):
@@ -413,6 +422,8 @@ class LabManager:
         if LEASE_FILE.exists():
             leases = LEASE_FILE.read_text().splitlines()
             for inst in self.active_instances.values():
+                if inst.get("bridge") == BRIDGE_INTERNAL:
+                    continue
                 if inst["ip"] not in ("pending", "unknown"):
                     continue
                 for line in leases:
@@ -422,14 +433,22 @@ class LabManager:
                         log.info("%s acquired external IP %s", inst["id"], parts[2])
                         break
         
-        # Refresh internal IPs from br_internal for multi-homed devices
+        # Refresh internal IPs from br_internal for multi-homed devices and internal_only devices
         if LEASE_FILE_INTERNAL.exists():
             leases_int = LEASE_FILE_INTERNAL.read_text().splitlines()
             for inst in self.active_instances.values():
-                if not inst.get("multi_homed") or not inst.get("mac_internal"):
-                    continue
-                if inst.get("ip_internal") not in ("pending", "unknown", None):
-                    continue
+                if inst.get("bridge") == BRIDGE_INTERNAL:
+                    if inst["ip"] not in ("pending", "unknown"):
+                        continue
+                    for line in leases_int:
+                        parts = line.split()
+                        if len(parts) >= 3 and parts[1].lower() == inst["mac"].lower():
+                            inst["ip"] = parts[2]
+                            log.info("%s acquired internal IP %s", inst["id"], parts[2])
+                            break
+                elif inst.get("multi_homed") and inst.get("mac_internal"):
+                    if inst.get("ip_internal") not in ("pending", "unknown", None):
+                        continue
                 for line in leases_int:
                     parts = line.split()
                     if len(parts) >= 3 and parts[1].lower() == inst["mac_internal"].lower():
