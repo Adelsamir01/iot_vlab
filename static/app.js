@@ -86,21 +86,19 @@ document.addEventListener('DOMContentLoaded', () => {
 
     const network = new vis.Network(container, visData, options);
 
-    nodes.add({
-        id: 'switch',
-        label: 'br0\n192.168.100.1',
-        shape: 'box',
-        color: { background: '#1e293b', border: '#3b82f6' },
-        font: { color: '#3b82f6', size: 14, bold: true },
-        margin: 10,
-        fixed: { x: false, y: false }
-    });
-
     let activeDevices = {};
     let selectedRunId = null;
     let lastAgentState = {};
 
-    // Risk level visual config
+    function deriveRisk(agentInfo) {
+        if (!agentInfo) return 'none';
+        if (agentInfo.remediation) return 'patched';
+        if ((agentInfo.vulnerabilities || []).length > 0) return 'exploited';
+        if ((agentInfo.attacks || {}).attack_count > 0) return 'attacked';
+        if (agentInfo.ports && Object.keys(agentInfo.ports).length > 0) return 'recon';
+        return 'none';
+    }
+
     const RISK_STYLES = {
         none:     { border: '#0f172a', borderWidth: 2, label: '' },
         recon:    { border: '#6366f1', borderWidth: 3, label: '' },
@@ -120,6 +118,19 @@ document.addEventListener('DOMContentLoaded', () => {
         return map[level] || map.none;
     }
 
+    function ensureSwitchNode(id, label, borderColor) {
+        if (!nodes.get(id)) {
+            nodes.add({
+                id: id,
+                label: label,
+                shape: 'box',
+                color: { background: '#1e293b', border: borderColor },
+                font: { color: borderColor, size: 14, bold: true },
+                margin: 10,
+            });
+        }
+    }
+
     function fetchTopology() {
         Promise.all([
             fetch('/api/topology').then(r => r.json()),
@@ -136,8 +147,27 @@ document.addEventListener('DOMContentLoaded', () => {
 
             nodeCountLabel.textContent = `${devices.length} nodes`;
 
-            // Determine if any agent activity exists to show the APIOT node
             const hasAgentActivity = Object.keys(agentHosts).length > 0;
+
+            // Track which bridges are actually in use
+            const usedBridges = new Set();
+            devices.forEach(d => {
+                usedBridges.add(d.bridge || 'br0');
+                if (d.ip_internal !== undefined) usedBridges.add('br_internal');
+            });
+
+            // Add/remove bridge switch nodes based on actual usage
+            if (usedBridges.has('br0')) {
+                ensureSwitchNode('switch', 'br0\n192.168.100.1', '#3b82f6');
+            } else if (nodes.get('switch')) {
+                nodes.remove('switch');
+            }
+
+            if (usedBridges.has('br_internal')) {
+                ensureSwitchNode('internal_switch', 'br_internal\n192.168.200.1', '#eab308');
+            } else if (nodes.get('internal_switch')) {
+                nodes.remove('internal_switch');
+            }
 
             if (hasAgentActivity && !nodes.get('apiot_agent')) {
                 nodes.add({
@@ -149,15 +179,17 @@ document.addEventListener('DOMContentLoaded', () => {
                     font: { color: '#c4b5fd', size: 12, bold: true },
                     borderWidth: 3,
                 });
-                edges.add({
-                    id: 'e_apiot_switch',
-                    from: 'apiot_agent',
-                    to: 'switch',
-                    length: 250,
-                    color: { color: 'rgba(124,58,237,0.4)' },
-                    dashes: [5, 5],
-                    width: 1,
-                });
+                if (nodes.get('switch')) {
+                    edges.add({
+                        id: 'e_apiot_switch',
+                        from: 'apiot_agent',
+                        to: 'switch',
+                        length: 250,
+                        color: { color: 'rgba(124,58,237,0.4)' },
+                        dashes: [5, 5],
+                        width: 1,
+                    });
+                }
             } else if (!hasAgentActivity && nodes.get('apiot_agent')) {
                 nodes.remove('apiot_agent');
                 edges.remove('e_apiot_switch');
@@ -170,7 +202,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
                 const isAlive = d.alive;
                 const agentInfo = agentHosts[d.ip] || null;
-                const risk = agentInfo ? agentInfo.risk_level || 'none' : 'none';
+                const risk = deriveRisk(agentInfo);
                 const riskStyle = RISK_STYLES[risk] || RISK_STYLES.none;
 
                 let bgColor = '#3b82f6';
@@ -198,24 +230,8 @@ document.addEventListener('DOMContentLoaded', () => {
                         title: tooltip,
                     });
 
-                    if (d.bridge === 'br_internal' || d.ip_internal !== undefined) {
-                        if (!nodes.get('internal_switch')) {
-                            nodes.add({
-                                id: 'internal_switch',
-                                label: 'br_internal\n192.168.200.1',
-                                shape: 'box',
-                                color: { background: '#1e293b', border: '#eab308' },
-                                font: { color: '#eab308', size: 14, bold: true },
-                                margin: 10
-                            });
-                        }
-                    }
-
-                    if (d.bridge === 'br_internal') {
-                        edges.add({ id: `e_${runId}`, from: 'internal_switch', to: runId, length: 200, dashes: !isAlive, hidden: isMesh });
-                    } else {
-                        edges.add({ id: `e_${runId}`, from: 'switch', to: runId, length: 200, dashes: !isAlive, hidden: isMesh });
-                    }
+                    const parentSwitch = (d.bridge === 'br_internal') ? 'internal_switch' : 'switch';
+                    edges.add({ id: `e_${runId}`, from: parentSwitch, to: runId, length: 200, dashes: !isAlive, hidden: isMesh });
 
                     if (d.ip_internal !== undefined) {
                         edges.add({ id: `e_int_${runId}`, from: 'internal_switch', to: runId, length: 200, dashes: !isAlive, hidden: isMesh });
@@ -261,7 +277,6 @@ document.addEventListener('DOMContentLoaded', () => {
                     }
                 }
 
-                // Update overlay if this node is selected
                 if (selectedRunId === runId) {
                     overlayIp.textContent = d.ip || 'N/A';
                     overlayStatus.innerHTML = isAlive
@@ -313,12 +328,13 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function populateAgentOverlay(agentInfo) {
-        if (!agentInfo || agentInfo.risk_level === 'none') {
+        const risk = deriveRisk(agentInfo);
+        if (!agentInfo || risk === 'none') {
             agentSection.style.display = 'none';
             return;
         }
         agentSection.style.display = 'block';
-        detailRisk.innerHTML = riskHtml(agentInfo.risk_level);
+        detailRisk.innerHTML = riskHtml(risk);
 
         const ports = Object.entries(agentInfo.ports || {});
         detailPorts.textContent = ports.length

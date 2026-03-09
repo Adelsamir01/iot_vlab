@@ -60,25 +60,19 @@ def _read_json(path: Path):
         return None
 
 
-def _derive_risk(attacks: dict, vulns: list, remediation: dict | None) -> str:
-    if remediation:
-        return "patched"
-    if vulns:
-        return "exploited"
-    if attacks.get("attack_count", 0) > 0:
-        return "attacked"
-    return "none"
-
-
 def build_agent_view() -> dict:
-    """Merge APIOT's three data files into a per-IP summary for the dashboard."""
+    """Merge APIOT's three data files into a per-IP summary for the dashboard.
+
+    Risk levels, vulnerability status, and remediation state are reported
+    exactly as APIOT wrote them — iot_vlab does NOT invent or override
+    any security assessments.
+    """
     net_state = _read_json(APIOT_DATA_DIR / "network_state.json") or {}
     attack_log = _read_json(APIOT_DATA_DIR / "attack_log.json") or []
     remed_log = _read_json(APIOT_DATA_DIR / "remediation_log.json") or []
 
     hosts: dict[str, dict] = {}
 
-    # Discovered hosts + fingerprints
     for ip, info in net_state.get("discovered_hosts", {}).items():
         hosts.setdefault(ip, {})
         hosts[ip]["mac"] = info.get("mac")
@@ -89,7 +83,6 @@ def build_agent_view() -> dict:
         hosts[ip]["ports"] = fp.get("ports", {})
         hosts[ip]["os_guess"] = fp.get("os_guess")
 
-    # Active vulnerabilities
     ip_vulns: dict[str, list] = {}
     for vid, v in net_state.get("active_vulnerabilities", {}).items():
         ip = v.get("ip")
@@ -104,7 +97,6 @@ def build_agent_view() -> dict:
         hosts.setdefault(ip, {})
         hosts[ip]["vulnerabilities"] = vlist
 
-    # Attack log (group by target_ip)
     ip_attacks: dict[str, dict] = {}
     ip_recent: dict[str, list] = {}
     for evt in attack_log:
@@ -127,7 +119,6 @@ def build_agent_view() -> dict:
         hosts[ip]["attacks"] = atk
         hosts[ip]["recent_attacks"] = ip_recent.get(ip, [])[-5:]
 
-    # Remediation log (group by target_ip, keep latest)
     ip_remed: dict[str, dict] = {}
     for entry in remed_log:
         ip = entry.get("target_ip")
@@ -143,19 +134,11 @@ def build_agent_view() -> dict:
         hosts.setdefault(ip, {})
         hosts[ip]["remediation"] = rem
 
-    # Derive risk_level per host
-    for ip, h in hosts.items():
-        h["risk_level"] = _derive_risk(
-            h.get("attacks", {}),
-            h.get("vulnerabilities", []),
-            h.get("remediation"),
-        )
-
     return {"hosts": hosts}
 
 
 # Background thread: mirror new APIOT attack events into the SSE log stream
-_attack_log_cursor = 0
+_attack_log_cursor: int | None = None
 
 
 def _apiot_log_watcher():
@@ -166,6 +149,9 @@ def _apiot_log_watcher():
         data = _read_json(APIOT_DATA_DIR / "attack_log.json")
         if not data or not isinstance(data, list):
             continue
+        if _attack_log_cursor is None:
+            _attack_log_cursor = len(data)
+            continue
         new_events = data[_attack_log_cursor:]
         _attack_log_cursor = len(data)
         for evt in new_events:
@@ -175,7 +161,9 @@ def _apiot_log_watcher():
             log.info("APIOT %s -> %s — outcome=%s", tool, target, outcome)
 
 
-threading.Thread(target=_apiot_log_watcher, daemon=True).start()
+def _start_apiot_watcher():
+    """Start the APIOT log watcher thread (call once from main, not at import)."""
+    threading.Thread(target=_apiot_log_watcher, daemon=True).start()
 
 # A simple list to keep recent logs in memory for the SSE stream
 _LOG_HISTORY = []
@@ -211,6 +199,7 @@ def serve_static(path):
     return send_from_directory(app.static_folder, path)
 
 @app.route("/api/topology", methods=["GET"])
+@app.route("/topology", methods=["GET"])
 def topology():
     """Return the current active topology."""
     try:
@@ -219,6 +208,14 @@ def topology():
     except Exception as e:
         log.error(f"Error fetching topology: {e}")
         return jsonify({"error": str(e)}), 500
+
+@app.route("/library", methods=["GET"])
+def library():
+    """Return all firmware configs (same contract as lab_api.py)."""
+    from scan_library import scan
+    configs = scan()
+    clean = [{k: v for k, v in c.items() if not k.startswith("_")} for c in configs]
+    return jsonify(clean)
 
 @app.route("/api/traffic_stats", methods=["GET"])
 def traffic_stats():
@@ -337,7 +334,7 @@ def run_wizard():
     apply_impairments = prompt_bool("Apply realistic network noise (latency, jitter, packet loss)?", default=False)
     enable_hmi = prompt_bool("Enable background HMI polling traffic (industrial noise)?", default=False)
 
-    print("\nStarting network provisioning...")
+    log.info("Starting network provisioning...")
     
     try:
         if topo_choice == 1:
@@ -456,10 +453,8 @@ def run_wizard():
 
 if __name__ == "__main__":
     try:
+        _start_apiot_watcher()
         run_wizard()
-        # Run Flask server
-        # use_reloader=False is important here so Flask doesn't spawn a second worker
-        # and trigger a double provisioning of devices!
         app.run(host="0.0.0.0", port=5000, debug=False, use_reloader=False)
     except KeyboardInterrupt:
         print("\nShutting down by user request...")

@@ -9,10 +9,8 @@ import json
 import os
 import sys
 import tempfile
-import time
 from pathlib import Path
 
-# Ensure repo root is importable
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 PASS = "\033[92m[PASS]\033[0m"
@@ -28,7 +26,6 @@ def check(name: str, ok: bool, detail: str = "") -> bool:
     return ok
 
 
-# Sample APIOT data fixtures
 NETWORK_STATE = {
     "discovered_hosts": {
         "192.168.100.35": {"mac": "00:00:94:00:83:00", "vendor": "Asante Technologies"}
@@ -83,23 +80,20 @@ REMEDIATION_LOG = [
 def main() -> None:
     print("\n===== APIOT Dashboard Integration Test =====\n")
 
-    # Create temp dir with fixture data
     with tempfile.TemporaryDirectory() as tmpdir:
         (Path(tmpdir) / "network_state.json").write_text(json.dumps(NETWORK_STATE))
         (Path(tmpdir) / "attack_log.json").write_text(json.dumps(ATTACK_LOG))
         (Path(tmpdir) / "remediation_log.json").write_text(json.dumps(REMEDIATION_LOG))
 
-        # Point the module at our fixtures
         os.environ["APIOT_DATA_DIR"] = tmpdir
 
-        # Force re-import to pick up env var
         if "interactive_lab" in sys.modules:
             del sys.modules["interactive_lab"]
 
         import interactive_lab
         interactive_lab.APIOT_DATA_DIR = Path(tmpdir)
 
-        # ── Test 1: build_agent_view returns correct structure ──
+        # ── Test 1: build_agent_view structure ──
         print("[*] Test 1: build_agent_view structure")
         view = interactive_lab.build_agent_view()
         check("Returns dict with 'hosts' key", "hosts" in view)
@@ -108,7 +102,7 @@ def main() -> None:
 
         h = hosts.get("192.168.100.35", {})
 
-        # ── Test 2: Mapper data merged ──
+        # ── Test 2: Mapper data ──
         print("\n[*] Test 2: Mapper data")
         check("MAC populated", h.get("mac") == "00:00:94:00:83:00")
         check("Vendor populated", h.get("vendor") == "Asante Technologies")
@@ -116,7 +110,7 @@ def main() -> None:
         port_info = h.get("ports", {}).get("4242", {})
         check("Port service is 'echo'", port_info.get("service") == "echo")
 
-        # ── Test 3: Vulnerabilities merged ──
+        # ── Test 3: Vulnerabilities ──
         print("\n[*] Test 3: Vulnerabilities")
         vulns = h.get("vulnerabilities", [])
         check("Has 1 vulnerability", len(vulns) == 1, f"got {len(vulns)}")
@@ -124,7 +118,7 @@ def main() -> None:
             check("Vuln ID is 'abc123'", vulns[0].get("id") == "abc123")
             check("Vuln attack is 'crash_verified'", vulns[0].get("attack") == "crash_verified")
 
-        # ── Test 4: Attack log merged ──
+        # ── Test 4: Attack log ──
         print("\n[*] Test 4: Attack log")
         atk = h.get("attacks", {})
         check("Attack count is 2", atk.get("attack_count") == 2, f"got {atk.get('attack_count')}")
@@ -134,7 +128,7 @@ def main() -> None:
         recent = h.get("recent_attacks", [])
         check("Recent attacks has 2 entries", len(recent) == 2, f"got {len(recent)}")
 
-        # ── Test 5: Remediation merged ──
+        # ── Test 5: Remediation ──
         print("\n[*] Test 5: Remediation")
         rem = h.get("remediation", {})
         check("Remediation present", bool(rem))
@@ -143,32 +137,21 @@ def main() -> None:
         check("Attack mitigated is 'coap_option_overflow'",
               rem.get("attack_mitigated") == "coap_option_overflow")
 
-        # ── Test 6: Risk level derivation ──
-        print("\n[*] Test 6: Risk level")
-        check("Risk level is 'patched' (remediation present)",
-              h.get("risk_level") == "patched", h.get("risk_level"))
+        # ── Test 6: No risk_level from backend ──
+        print("\n[*] Test 6: Backend does NOT inject risk_level")
+        check("risk_level NOT in host data",
+              "risk_level" not in h,
+              f"keys: {list(h.keys())}")
 
-        # ── Test 7: Risk derivation for different states ──
-        print("\n[*] Test 7: Risk derivation edge cases")
-        from interactive_lab import _derive_risk
-        check("No data -> 'none'",
-              _derive_risk({}, [], None) == "none")
-        check("Only attacks -> 'attacked'",
-              _derive_risk({"attack_count": 3}, [], None) == "attacked")
-        check("Vulns present -> 'exploited'",
-              _derive_risk({"attack_count": 1}, [{"id": "x"}], None) == "exploited")
-        check("Remediation present -> 'patched'",
-              _derive_risk({"attack_count": 1}, [{"id": "x"}], {"applied": True}) == "patched")
-
-        # ── Test 8: Empty data graceful handling ──
-        print("\n[*] Test 8: Empty / missing APIOT data")
+        # ── Test 7: Empty / missing APIOT data ──
+        print("\n[*] Test 7: Empty / missing APIOT data")
         interactive_lab.APIOT_DATA_DIR = Path("/nonexistent/path")
         interactive_lab._apiot_warned = False
         view_empty = interactive_lab.build_agent_view()
         check("Missing data returns empty hosts", view_empty == {"hosts": {}})
 
-        # ── Test 9: Flask endpoint contract ──
-        print("\n[*] Test 9: /api/agent_state endpoint")
+        # ── Test 8: Flask endpoint /api/agent_state ──
+        print("\n[*] Test 8: /api/agent_state endpoint")
         interactive_lab.APIOT_DATA_DIR = Path(tmpdir)
         with interactive_lab.app.test_client() as client:
             resp = client.get("/api/agent_state")
@@ -178,14 +161,30 @@ def main() -> None:
             check("Host data present in response",
                   "192.168.100.35" in body.get("hosts", {}))
 
-        # ── Test 10: Endpoint with missing data returns empty ──
-        print("\n[*] Test 10: /api/agent_state with no APIOT data")
+        # ── Test 9: Endpoint with missing data ──
+        print("\n[*] Test 9: /api/agent_state with no APIOT data")
         interactive_lab.APIOT_DATA_DIR = Path("/nonexistent/path")
         with interactive_lab.app.test_client() as client:
             resp = client.get("/api/agent_state")
             check("Endpoint still returns 200", resp.status_code == 200)
             body = resp.get_json()
             check("Response hosts is empty", body.get("hosts") == {})
+
+        # ── Test 10: /topology endpoint (APIOT compat) ──
+        print("\n[*] Test 10: /topology endpoint (APIOT compatibility)")
+        with interactive_lab.app.test_client() as client:
+            resp = client.get("/topology")
+            check("/topology returns 200", resp.status_code == 200)
+            check("/topology returns list", isinstance(resp.get_json(), list))
+
+        # ── Test 11: /library endpoint (APIOT compat) ──
+        print("\n[*] Test 11: /library endpoint (APIOT compatibility)")
+        with interactive_lab.app.test_client() as client:
+            resp = client.get("/library")
+            check("/library returns 200", resp.status_code == 200)
+            lib = resp.get_json()
+            check("/library returns list", isinstance(lib, list))
+            check("/library has firmware entries", len(lib) > 0, f"got {len(lib)}")
 
     # ── Summary ──
     total = len(results)
