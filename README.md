@@ -105,6 +105,16 @@ is ready for activation when future Zephyr versions add support.
 | **Python 3.10+** | With `flask` and `requests` |
 | **Zephyr toolchain** (optional) | Only needed if you want to rebuild MCU firmware from source |
 
+### Why `sudo` is required
+
+Several core operations in the lab interact directly with the Linux networking stack and therefore must run with elevated privileges:
+
+- `lab_manager.py` uses `ip tuntap` and `ip link` to **create/destroy TAP interfaces** and attach them to the `br0` / `br_internal` bridges so QEMU guests can join the virtual Layer-2 network.
+- `setup_network.sh` and `impair_network.sh` configure **bridges, DHCP, NAT, and `tc netem` traffic control**, all of which modify kernel state.
+- `interactive_lab.py` calls these helpers when you enable **realism features** (network impairments and background HMI traffic), which internally apply `tc` rules or generate privileged traffic patterns.
+
+The REST APIs and dashboard themselves do **not** require special permissions, but anything that spawns QEMU devices or manipulates TAP/bridge state must be run under `sudo` so the underlying kernel operations succeed.
+
 ---
 
 ## Installation

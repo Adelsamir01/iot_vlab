@@ -6,6 +6,7 @@ devices using lab_manager, and starts a Flask server providing a web dashboard
 with live topology updates and continuous log streaming via SSE.
 """
 
+import os
 import sys
 import time
 import json
@@ -38,6 +39,143 @@ manager = LabManager()
 hmi_proc = None
 traffic_gen = None
 impairments_active = False
+
+# --- APIOT integration (read-only) ---
+APIOT_DATA_DIR = Path(
+    os.environ.get("APIOT_DATA_DIR",
+                   str(Path(__file__).resolve().parent.parent / "apiot" / "data"))
+)
+_apiot_warned = False
+
+
+def _read_json(path: Path):
+    """Best-effort JSON load; returns None on any failure."""
+    global _apiot_warned
+    try:
+        return json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        if not _apiot_warned:
+            log.warning("APIOT data not available at %s (this is fine if APIOT is not running)", APIOT_DATA_DIR)
+            _apiot_warned = True
+        return None
+
+
+def _derive_risk(attacks: dict, vulns: list, remediation: dict | None) -> str:
+    if remediation:
+        return "patched"
+    if vulns:
+        return "exploited"
+    if attacks.get("attack_count", 0) > 0:
+        return "attacked"
+    return "none"
+
+
+def build_agent_view() -> dict:
+    """Merge APIOT's three data files into a per-IP summary for the dashboard."""
+    net_state = _read_json(APIOT_DATA_DIR / "network_state.json") or {}
+    attack_log = _read_json(APIOT_DATA_DIR / "attack_log.json") or []
+    remed_log = _read_json(APIOT_DATA_DIR / "remediation_log.json") or []
+
+    hosts: dict[str, dict] = {}
+
+    # Discovered hosts + fingerprints
+    for ip, info in net_state.get("discovered_hosts", {}).items():
+        hosts.setdefault(ip, {})
+        hosts[ip]["mac"] = info.get("mac")
+        hosts[ip]["vendor"] = info.get("vendor")
+
+    for ip, fp in net_state.get("fingerprints", {}).items():
+        hosts.setdefault(ip, {})
+        hosts[ip]["ports"] = fp.get("ports", {})
+        hosts[ip]["os_guess"] = fp.get("os_guess")
+
+    # Active vulnerabilities
+    ip_vulns: dict[str, list] = {}
+    for vid, v in net_state.get("active_vulnerabilities", {}).items():
+        ip = v.get("ip")
+        if ip:
+            ip_vulns.setdefault(ip, []).append({
+                "id": vid, "attack": v.get("attack"),
+                "details": v.get("verification", {}).get("details"),
+                "timestamp": v.get("timestamp"),
+            })
+
+    for ip, vlist in ip_vulns.items():
+        hosts.setdefault(ip, {})
+        hosts[ip]["vulnerabilities"] = vlist
+
+    # Attack log (group by target_ip)
+    ip_attacks: dict[str, dict] = {}
+    ip_recent: dict[str, list] = {}
+    for evt in attack_log:
+        ip = evt.get("target_ip")
+        if not ip:
+            continue
+        entry = ip_attacks.setdefault(ip, {"attack_count": 0})
+        entry["attack_count"] += 1
+        entry["last_attack_time"] = evt.get("timestamp")
+        entry["last_attack_tool"] = evt.get("tool_used")
+        entry["last_outcome"] = evt.get("outcome")
+        ip_recent.setdefault(ip, []).append({
+            "tool": evt.get("tool_used"),
+            "outcome": evt.get("outcome"),
+            "time": evt.get("timestamp"),
+        })
+
+    for ip, atk in ip_attacks.items():
+        hosts.setdefault(ip, {})
+        hosts[ip]["attacks"] = atk
+        hosts[ip]["recent_attacks"] = ip_recent.get(ip, [])[-5:]
+
+    # Remediation log (group by target_ip, keep latest)
+    ip_remed: dict[str, dict] = {}
+    for entry in remed_log:
+        ip = entry.get("target_ip")
+        if ip:
+            ip_remed[ip] = {
+                "last_rule": entry.get("rule"),
+                "applied": entry.get("applied"),
+                "last_applied_time": entry.get("timestamp"),
+                "attack_mitigated": entry.get("attack"),
+            }
+
+    for ip, rem in ip_remed.items():
+        hosts.setdefault(ip, {})
+        hosts[ip]["remediation"] = rem
+
+    # Derive risk_level per host
+    for ip, h in hosts.items():
+        h["risk_level"] = _derive_risk(
+            h.get("attacks", {}),
+            h.get("vulnerabilities", []),
+            h.get("remediation"),
+        )
+
+    return {"hosts": hosts}
+
+
+# Background thread: mirror new APIOT attack events into the SSE log stream
+_attack_log_cursor = 0
+
+
+def _apiot_log_watcher():
+    """Poll attack_log.json and emit new events into the SSE log stream."""
+    global _attack_log_cursor
+    while True:
+        time.sleep(3)
+        data = _read_json(APIOT_DATA_DIR / "attack_log.json")
+        if not data or not isinstance(data, list):
+            continue
+        new_events = data[_attack_log_cursor:]
+        _attack_log_cursor = len(data)
+        for evt in new_events:
+            tool = evt.get("tool_used", "unknown")
+            target = evt.get("target_ip", "?")
+            outcome = evt.get("outcome", "?")
+            log.info("APIOT %s -> %s — outcome=%s", tool, target, outcome)
+
+
+threading.Thread(target=_apiot_log_watcher, daemon=True).start()
 
 # A simple list to keep recent logs in memory for the SSE stream
 _LOG_HISTORY = []
@@ -120,6 +258,16 @@ def log_stream():
                 yield f"data: {payload}\n\n"
     
     return Response(generate(), mimetype="text/event-stream")
+
+@app.route("/api/agent_state", methods=["GET"])
+def agent_state():
+    """Return merged APIOT telemetry (recon, attacks, patches) keyed by IP."""
+    try:
+        return jsonify(build_agent_view())
+    except Exception as e:
+        log.error("Error building agent view: %s", e)
+        return jsonify({"hosts": {}})
+
 
 @app.route("/api/kill/<run_id>", methods=["POST"])
 def kill_device(run_id):
