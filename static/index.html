@@ -13,8 +13,15 @@
 <body>
     <div class="header">
         <h1>iot<span>_vlab</span> Control Center</h1>
-        <div class="status-indicator">
-            <span class="pulse"></span> System Active
+        <div style="display:flex;align-items:center;gap:1.5rem">
+            <div class="apiot-badge" id="apiot-badge" style="display:none">
+                <span class="pulse pulse-apiot"></span>
+                APIOT Engaged
+            </div>
+            <div class="status-indicator" id="system-status">
+                <span class="pulse pulse-warn"></span>
+                <span id="status-text">Initializing...</span>
+            </div>
         </div>
     </div>
     

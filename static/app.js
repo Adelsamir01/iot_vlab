@@ -19,6 +19,8 @@ document.addEventListener('DOMContentLoaded', () => {
     const detailLastTool = document.getElementById('detail-last-tool');
     const detailRemediation = document.getElementById('detail-remediation');
 
+    const apiotBadge = document.getElementById('apiot-badge');
+
     let logsReceived = 0;
     let autoScroll = true;
 
@@ -89,6 +91,10 @@ document.addEventListener('DOMContentLoaded', () => {
     let activeDevices = {};
     let selectedRunId = null;
     let lastAgentState = {};
+    let agentActive = false;
+
+    // How many seconds an attack arrow stays visible after the last attack
+    const ATTACK_EDGE_TTL = 15;
 
     function deriveRisk(agentInfo) {
         if (!agentInfo) return 'none';
@@ -100,11 +106,11 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     const RISK_STYLES = {
-        none:     { border: '#0f172a', borderWidth: 2, label: '' },
-        recon:    { border: '#6366f1', borderWidth: 3, label: '' },
-        attacked: { border: '#f59e0b', borderWidth: 3, label: ' [ATK]' },
-        exploited:{ border: '#ef4444', borderWidth: 4, label: ' [VULN]' },
-        patched:  { border: '#10b981', borderWidth: 4, label: ' [FIX]' },
+        none:     { border: '#0f172a', borderWidth: 2, label: '', icon: '' },
+        recon:    { border: '#6366f1', borderWidth: 3, label: '', icon: '' },
+        attacked: { border: '#f59e0b', borderWidth: 3, label: '', icon: ' ⚡' },
+        exploited:{ border: '#ef4444', borderWidth: 4, label: '', icon: ' 🔓' },
+        patched:  { border: '#10b981', borderWidth: 4, label: '', icon: ' ✅' },
     };
 
     function riskHtml(level) {
@@ -131,14 +137,47 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
+    // Remove all APIOT-related visual elements
+    function clearAgentVisuals() {
+        if (nodes.get('apiot_agent')) nodes.remove('apiot_agent');
+        edges.get().forEach(e => {
+            if (e.id.startsWith('atk_') || e.id === 'e_apiot_switch' || e.id === 'e_apiot_internal') {
+                edges.remove(e.id);
+            }
+        });
+        // Reset all device node borders back to default
+        Object.keys(activeDevices).forEach(runId => {
+            const d = activeDevices[runId];
+            let bgColor = '#3b82f6';
+            if (d.arch === 'armel') bgColor = '#10b981';
+            else if (d.arch === 'cortex-m3') bgColor = '#f59e0b';
+            if (!d.alive) bgColor = '#ef4444';
+            nodes.update({
+                id: runId,
+                label: `${d.firmware_id}\n${d.ip || 'Waiting DHCP...'}`,
+                color: { background: bgColor, border: '#0f172a' },
+                borderWidth: 2,
+                title: `MAC: ${d.mac}<br>PID: ${d.pid}`,
+            });
+        });
+    }
+
     function fetchTopology() {
         Promise.all([
             fetch('/api/topology').then(r => r.json()),
             fetch('/api/traffic_stats').then(r => r.json()),
-            fetch('/api/agent_state').then(r => r.json()).catch(() => ({ hosts: {} }))
+            fetch('/api/agent_state').then(r => r.json()).catch(() => ({ active: false, hosts: {} }))
         ])
         .then(([devices, trafficStats, agentState]) => {
+            const nowActive = !!(agentState && agentState.active);
             const agentHosts = (agentState && agentState.hosts) || {};
+            const serverTime = agentState.server_time || (Date.now() / 1000);
+
+            // Agent just went away — clean up everything
+            if (agentActive && !nowActive) {
+                clearAgentVisuals();
+            }
+            agentActive = nowActive;
             lastAgentState = agentHosts;
 
             const newIds = new Set(devices.map(d => d.id));
@@ -147,7 +186,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
             nodeCountLabel.textContent = `${devices.length} nodes`;
 
-            const hasAgentActivity = Object.keys(agentHosts).length > 0;
+            // APIOT badge visibility
+            if (apiotBadge) {
+                apiotBadge.style.display = nowActive ? 'flex' : 'none';
+            }
 
             // Track which bridges are actually in use
             const usedBridges = new Set();
@@ -156,7 +198,6 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (d.ip_internal !== undefined) usedBridges.add('br_internal');
             });
 
-            // Add/remove bridge switch nodes based on actual usage
             if (usedBridges.has('br0')) {
                 ensureSwitchNode('switch', 'br0\n192.168.100.1', '#3b82f6');
             } else if (nodes.get('switch')) {
@@ -169,17 +210,26 @@ document.addEventListener('DOMContentLoaded', () => {
                 nodes.remove('internal_switch');
             }
 
-            if (hasAgentActivity && !nodes.get('apiot_agent')) {
-                nodes.add({
-                    id: 'apiot_agent',
-                    label: 'APIOT\nAgent',
-                    shape: 'diamond',
-                    size: 20,
-                    color: { background: '#7c3aed', border: '#c4b5fd' },
-                    font: { color: '#c4b5fd', size: 12, bold: true },
-                    borderWidth: 3,
-                });
-                if (nodes.get('switch')) {
+            // APIOT agent node — only when active
+            if (nowActive) {
+                // Determine which bridges APIOT is interacting with
+                const agentIps = Object.keys(agentHosts);
+                const touchesBr0 = agentIps.some(ip => ip.startsWith('192.168.100.'));
+                const touchesInternal = agentIps.some(ip => ip.startsWith('192.168.200.'));
+
+                if (!nodes.get('apiot_agent')) {
+                    nodes.add({
+                        id: 'apiot_agent',
+                        label: 'APIOT\nAgent',
+                        shape: 'diamond',
+                        size: 20,
+                        color: { background: '#7c3aed', border: '#c4b5fd' },
+                        font: { color: '#c4b5fd', size: 12, bold: true },
+                        borderWidth: 3,
+                    });
+                }
+
+                if (touchesBr0 && nodes.get('switch') && !edges.get('e_apiot_switch')) {
                     edges.add({
                         id: 'e_apiot_switch',
                         from: 'apiot_agent',
@@ -189,11 +239,29 @@ document.addEventListener('DOMContentLoaded', () => {
                         dashes: [5, 5],
                         width: 1,
                     });
+                } else if (!touchesBr0 && edges.get('e_apiot_switch')) {
+                    edges.remove('e_apiot_switch');
                 }
-            } else if (!hasAgentActivity && nodes.get('apiot_agent')) {
-                nodes.remove('apiot_agent');
-                edges.remove('e_apiot_switch');
+
+                if (touchesInternal && nodes.get('internal_switch') && !edges.get('e_apiot_internal')) {
+                    edges.add({
+                        id: 'e_apiot_internal',
+                        from: 'apiot_agent',
+                        to: 'internal_switch',
+                        length: 250,
+                        color: { color: 'rgba(124,58,237,0.4)' },
+                        dashes: [5, 5],
+                        width: 1,
+                    });
+                } else if (!touchesInternal && edges.get('e_apiot_internal')) {
+                    edges.remove('e_apiot_internal');
+                }
+            } else if (nodes.get('apiot_agent')) {
+                clearAgentVisuals();
             }
+
+            // Track which attack edges should be alive this cycle
+            const liveAtkEdges = new Set();
 
             devices.forEach(d => {
                 const runId = d.id;
@@ -201,23 +269,24 @@ document.addEventListener('DOMContentLoaded', () => {
                 activeDevices[runId] = d;
 
                 const isAlive = d.alive;
-                const agentInfo = agentHosts[d.ip] || null;
+                const agentInfo = nowActive ? (agentHosts[d.ip] || null) : null;
                 const risk = deriveRisk(agentInfo);
-                const riskStyle = RISK_STYLES[risk] || RISK_STYLES.none;
+                const riskStyle = nowActive ? (RISK_STYLES[risk] || RISK_STYLES.none) : RISK_STYLES.none;
 
                 let bgColor = '#3b82f6';
                 if (d.arch === 'armel') bgColor = '#10b981';
                 else if (d.arch === 'cortex-m3') bgColor = '#f59e0b';
                 if (!isAlive) bgColor = '#ef4444';
 
-                const label = `${d.firmware_id}\n${d.ip || 'Waiting DHCP...'}${riskStyle.label}`;
+                const label = `${d.firmware_id}\n${d.ip || 'Waiting DHCP...'}${riskStyle.icon}`;
 
                 let tooltip = `MAC: ${d.mac}<br>PID: ${d.pid}`;
                 if (agentInfo) {
                     const ports = Object.keys(agentInfo.ports || {});
-                    tooltip += `<br>Ports: ${ports.join(', ') || 'n/a'}`;
+                    if (ports.length) tooltip += `<br>Ports: ${ports.join(', ')}`;
                     tooltip += `<br>Risk: ${risk}`;
-                    tooltip += `<br>Attacks: ${(agentInfo.attacks || {}).attack_count || 0}`;
+                    const atkCount = (agentInfo.attacks || {}).attack_count || 0;
+                    if (atkCount) tooltip += `<br>Attacks: ${atkCount}`;
                     if (agentInfo.remediation) tooltip += '<br>Remediation: applied';
                 }
 
@@ -250,30 +319,35 @@ document.addEventListener('DOMContentLoaded', () => {
                     }
                 }
 
-                // APIOT attack edges
-                if (hasAgentActivity && agentInfo && (agentInfo.attacks || {}).attack_count > 0) {
+                // Transient attack edges — only show if last attack was within TTL
+                if (nowActive && agentInfo) {
+                    const lastTime = (agentInfo.attacks || {}).last_attack_time || 0;
+                    const age = serverTime - lastTime;
                     const atkEdgeId = `atk_${runId}`;
-                    const atkCount = agentInfo.attacks.attack_count;
-                    const atkColor = risk === 'exploited' ? 'rgba(239,68,68,0.6)'
-                                   : risk === 'patched'  ? 'rgba(16,185,129,0.5)'
-                                   : 'rgba(245,158,11,0.5)';
-                    if (!edges.get(atkEdgeId)) {
-                        edges.add({
-                            id: atkEdgeId,
-                            from: 'apiot_agent',
-                            to: runId,
-                            length: 300,
-                            color: { color: atkColor },
-                            width: Math.min(1 + atkCount, 5),
-                            dashes: [8, 4],
-                            arrows: { to: { enabled: true, scaleFactor: 0.5 } },
-                        });
-                    } else {
-                        edges.update({
-                            id: atkEdgeId,
-                            color: { color: atkColor },
-                            width: Math.min(1 + atkCount, 5),
-                        });
+
+                    if (age <= ATTACK_EDGE_TTL && lastTime > 0) {
+                        liveAtkEdges.add(atkEdgeId);
+                        const opacity = Math.max(0.15, 1 - (age / ATTACK_EDGE_TTL));
+                        const atkColor = risk === 'exploited' ? `rgba(239,68,68,${opacity})`
+                                       : risk === 'patched'  ? `rgba(16,185,129,${opacity})`
+                                       : `rgba(245,158,11,${opacity})`;
+                        if (!edges.get(atkEdgeId)) {
+                            edges.add({
+                                id: atkEdgeId,
+                                from: 'apiot_agent',
+                                to: runId,
+                                length: 300,
+                                color: { color: atkColor },
+                                width: 2,
+                                dashes: [8, 4],
+                                arrows: { to: { enabled: true, scaleFactor: 0.5 } },
+                            });
+                        } else {
+                            edges.update({
+                                id: atkEdgeId,
+                                color: { color: atkColor },
+                            });
+                        }
                     }
                 }
 
@@ -287,7 +361,14 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
             });
 
-            // Remove stale nodes
+            // Remove stale attack edges (expired TTL)
+            edges.get().forEach(e => {
+                if (e.id.startsWith('atk_') && !liveAtkEdges.has(e.id)) {
+                    edges.remove(e.id);
+                }
+            });
+
+            // Remove stale device nodes
             for (let cid of currentIds) {
                 if (!newIds.has(cid)) {
                     nodes.remove(cid);
@@ -329,7 +410,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function populateAgentOverlay(agentInfo) {
         const risk = deriveRisk(agentInfo);
-        if (!agentInfo || risk === 'none') {
+        if (!agentActive || !agentInfo || risk === 'none') {
             agentSection.style.display = 'none';
             return;
         }
@@ -402,7 +483,31 @@ document.addEventListener('DOMContentLoaded', () => {
             });
     });
 
+    // --- 3. Readiness Indicator ---
+    const statusText = document.getElementById('status-text');
+    const statusIndicator = document.getElementById('system-status');
+    const pulseEl = statusIndicator.querySelector('.pulse');
+
+    function fetchReady() {
+        fetch('/api/ready').then(r => r.json()).then(data => {
+            if (data.ready) {
+                statusText.textContent = `Ready (${data.total} devices)`;
+                statusIndicator.style.color = 'var(--success)';
+                pulseEl.classList.remove('pulse-warn');
+                pulseEl.classList.add('pulse-ready');
+            } else {
+                const done = data.total - data.pending;
+                statusText.textContent = `Initializing... (${done}/${data.total} IPs assigned)`;
+                statusIndicator.style.color = 'var(--warning)';
+                pulseEl.classList.remove('pulse-ready');
+                pulseEl.classList.add('pulse-warn');
+            }
+        }).catch(() => {});
+    }
+
     fetchTopology();
+    fetchReady();
     setInterval(fetchTopology, 2000);
+    setInterval(fetchReady, 3000);
 
 });

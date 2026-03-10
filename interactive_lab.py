@@ -39,6 +39,9 @@ manager = LabManager()
 hmi_proc = None
 traffic_gen = None
 impairments_active = False
+lab_ready = False
+lab_ready_total = 0
+lab_ready_pending = 0
 
 # --- APIOT integration (read-only) ---
 APIOT_DATA_DIR = Path(
@@ -60,6 +63,22 @@ def _read_json(path: Path):
         return None
 
 
+APIOT_STALE_THRESHOLD = 30  # seconds — if no file changed in this window, APIOT is gone
+
+
+def _apiot_is_live() -> bool:
+    """Check whether any APIOT data file was modified recently."""
+    now = time.time()
+    for name in ("network_state.json", "attack_log.json", "remediation_log.json"):
+        p = APIOT_DATA_DIR / name
+        try:
+            if now - p.stat().st_mtime < APIOT_STALE_THRESHOLD:
+                return True
+        except OSError:
+            continue
+    return False
+
+
 def build_agent_view() -> dict:
     """Merge APIOT's three data files into a per-IP summary for the dashboard.
 
@@ -67,9 +86,14 @@ def build_agent_view() -> dict:
     exactly as APIOT wrote them — iot_vlab does NOT invent or override
     any security assessments.
     """
+    live = _apiot_is_live()
+
     net_state = _read_json(APIOT_DATA_DIR / "network_state.json") or {}
     attack_log = _read_json(APIOT_DATA_DIR / "attack_log.json") or []
     remed_log = _read_json(APIOT_DATA_DIR / "remediation_log.json") or []
+
+    if not live:
+        return {"active": False, "hosts": {}}
 
     hosts: dict[str, dict] = {}
 
@@ -134,7 +158,7 @@ def build_agent_view() -> dict:
         hosts.setdefault(ip, {})
         hosts[ip]["remediation"] = rem
 
-    return {"hosts": hosts}
+    return {"active": True, "hosts": hosts, "server_time": time.time()}
 
 
 # Background thread: mirror new APIOT attack events into the SSE log stream
@@ -264,6 +288,16 @@ def agent_state():
     except Exception as e:
         log.error("Error building agent view: %s", e)
         return jsonify({"hosts": {}})
+
+
+@app.route("/api/ready", methods=["GET"])
+def ready():
+    """Return lab readiness status (all devices have IPs and are communicating)."""
+    return jsonify({
+        "ready": lab_ready,
+        "total": lab_ready_total,
+        "pending": lab_ready_pending,
+    })
 
 
 @app.route("/api/kill/<run_id>", methods=["POST"])
@@ -434,14 +468,37 @@ def run_wizard():
         manager.reset_lab()
         sys.exit(1)
 
-    # Start a background thread to continually update traffic_gen topology if active
-    if traffic_gen and traffic_gen.running:
-        def update_mesh_topo():
-            while traffic_gen.running:
-                time.sleep(5)
-                manager.refresh_ips()
+    # Background thread: poll until all devices have IPs, then set lab_ready
+    def _ip_wait_loop():
+        global lab_ready, lab_ready_total, lab_ready_pending
+        max_wait = 180  # seconds
+        poll_interval = 5
+        elapsed = 0
+        while elapsed < max_wait:
+            time.sleep(poll_interval)
+            elapsed += poll_interval
+            manager.refresh_ips()
+            topo = manager.get_topology()
+            lab_ready_total = len(topo)
+            pending = [d for d in topo if d["ip"] in ("pending", "unknown")]
+            lab_ready_pending = len(pending)
+            if lab_ready_pending == 0 and lab_ready_total > 0:
+                lab_ready = True
+                log.info("All %d device(s) have IPs — lab is ready for testing", lab_ready_total)
+                break
+            log.info("Waiting for IPs: %d/%d devices ready...", lab_ready_total - lab_ready_pending, lab_ready_total)
+        else:
+            lab_ready = True
+            log.warning("IP wait timeout (%ds) — %d device(s) still pending", max_wait, lab_ready_pending)
+
+        # Keep refreshing IPs periodically (and update mesh traffic gen if active)
+        while True:
+            time.sleep(10)
+            manager.refresh_ips()
+            if traffic_gen and traffic_gen.running:
                 traffic_gen.topology = manager.get_topology()
-        threading.Thread(target=update_mesh_topo, daemon=True).start()
+
+    threading.Thread(target=_ip_wait_loop, daemon=True).start()
 
     print("="*60)
     print(" Provisioning complete.")

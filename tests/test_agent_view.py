@@ -9,6 +9,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -148,7 +149,8 @@ def main() -> None:
         interactive_lab.APIOT_DATA_DIR = Path("/nonexistent/path")
         interactive_lab._apiot_warned = False
         view_empty = interactive_lab.build_agent_view()
-        check("Missing data returns empty hosts", view_empty == {"hosts": {}})
+        check("Missing data returns active=False", view_empty.get("active") is False)
+        check("Missing data returns empty hosts", view_empty.get("hosts") == {})
 
         # ── Test 8: Flask endpoint /api/agent_state ──
         print("\n[*] Test 8: /api/agent_state endpoint")
@@ -157,6 +159,9 @@ def main() -> None:
             resp = client.get("/api/agent_state")
             check("Endpoint returns 200", resp.status_code == 200)
             body = resp.get_json()
+            check("Response has 'active' key", "active" in body)
+            check("active is True when data exists", body.get("active") is True)
+            check("Response has 'server_time'", "server_time" in body)
             check("Response has 'hosts' key", "hosts" in body)
             check("Host data present in response",
                   "192.168.100.35" in body.get("hosts", {}))
@@ -168,6 +173,7 @@ def main() -> None:
             resp = client.get("/api/agent_state")
             check("Endpoint still returns 200", resp.status_code == 200)
             body = resp.get_json()
+            check("active is False when no data", body.get("active") is False)
             check("Response hosts is empty", body.get("hosts") == {})
 
         # ── Test 10: /topology endpoint (APIOT compat) ──
@@ -185,6 +191,30 @@ def main() -> None:
             lib = resp.get_json()
             check("/library returns list", isinstance(lib, list))
             check("/library has firmware entries", len(lib) > 0, f"got {len(lib)}")
+
+        # ── Test 12: Stale APIOT data returns active=False ──
+        print("\n[*] Test 12: Stale APIOT data returns active=False")
+        interactive_lab.APIOT_DATA_DIR = Path(tmpdir)
+        # Set file mtimes to 60 seconds ago (past the 30s threshold)
+        old_time = time.time() - 60
+        for name in ("network_state.json", "attack_log.json", "remediation_log.json"):
+            os.utime(Path(tmpdir) / name, (old_time, old_time))
+        view_stale = interactive_lab.build_agent_view()
+        check("Stale files return active=False", view_stale.get("active") is False)
+        check("Stale files return empty hosts", view_stale.get("hosts") == {})
+        # Restore fresh mtime for subsequent tests
+        for name in ("network_state.json", "attack_log.json", "remediation_log.json"):
+            (Path(tmpdir) / name).write_text((Path(tmpdir) / name).read_text())
+
+        # ── Test 13: /api/ready endpoint ──
+        print("\n[*] Test 12: /api/ready endpoint")
+        with interactive_lab.app.test_client() as client:
+            resp = client.get("/api/ready")
+            check("/api/ready returns 200", resp.status_code == 200)
+            body = resp.get_json()
+            check("/api/ready has 'ready' key", "ready" in body)
+            check("/api/ready has 'total' key", "total" in body)
+            check("/api/ready has 'pending' key", "pending" in body)
 
     # ── Summary ──
     total = len(results)

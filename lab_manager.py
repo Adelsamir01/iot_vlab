@@ -68,16 +68,31 @@ class LabManager:
     
     @staticmethod
     def _ensure_internal_bridge() -> None:
-        """Ensure br_internal bridge exists and is configured."""
-        # Check if bridge exists
+        """Ensure br_internal bridge exists, has an IP, and dnsmasq serves DHCP on it."""
         result = _run(["ip", "link", "show", BRIDGE_INTERNAL], check=False)
         if result.returncode != 0:
             log.info("Creating internal bridge %s...", BRIDGE_INTERNAL)
             _run(["sudo", "ip", "link", "add", "name", BRIDGE_INTERNAL, "type", "bridge"])
-            # Assign IP to internal bridge (different subnet: 192.168.200.0/24)
             _run(["sudo", "ip", "addr", "add", "192.168.200.1/24", "dev", BRIDGE_INTERNAL])
             _run(["sudo", "ip", "link", "set", BRIDGE_INTERNAL, "up"])
-            log.info("Internal bridge %s created and configured", BRIDGE_INTERNAL)
+
+        # Ensure dnsmasq is serving DHCP on br_internal
+        check = _run(["pgrep", "-f", f"dnsmasq.*{BRIDGE_INTERNAL}"], check=False)
+        if check.returncode != 0:
+            conf = Path("/etc/dnsmasq.d/iot-lab-internal.conf")
+            conf.write_text(
+                f"interface={BRIDGE_INTERNAL}\n"
+                f"bind-interfaces\n"
+                f"dhcp-range=192.168.200.10,192.168.200.50,12h\n"
+                f"dhcp-option=option:router,192.168.200.1\n"
+                f"dhcp-leasefile={LEASE_FILE_INTERNAL}\n"
+                f"except-interface=lo\n"
+            )
+            LEASE_FILE_INTERNAL.parent.mkdir(parents=True, exist_ok=True)
+            LEASE_FILE_INTERNAL.touch(exist_ok=True)
+            _run(["sudo", "dnsmasq", f"--conf-file={conf}",
+                  "--pid-file=/run/dnsmasq-br_internal.pid"], check=False)
+            log.info("Started dnsmasq on %s (DHCP 192.168.200.10-50)", BRIDGE_INTERNAL)
 
     @staticmethod
     def _destroy_tap(tap: str) -> None:
@@ -173,10 +188,10 @@ class LabManager:
                 ]
             elif arch == "armel":
                 net_config = [
-                    "-net", f"nic,macaddr={mac}",
-                    "-net", f"tap,ifname={tap},script=no,downscript=no",
-                    "-net", f"nic,macaddr={mac_int}",
-                    "-net", f"tap,ifname={tap_int},script=no,downscript=no",
+                    "-netdev", f"tap,id=net0,ifname={tap},script=no,downscript=no",
+                    "-device", f"rtl8139,netdev=net0,mac={mac}",
+                    "-netdev", f"tap,id=net1,ifname={tap_int},script=no,downscript=no",
+                    "-device", f"rtl8139,netdev=net1,mac={mac_int}",
                 ]
             else:
                 raise ValueError(f"Multi-homed not supported for arch: {arch}")
@@ -293,9 +308,9 @@ class LabManager:
         if fw.get("rootfs") and not (fw_dir / fw["rootfs"]).is_file():
             raise FileNotFoundError(f"Rootfs missing: {fw_dir / fw['rootfs']}")
 
-        self._create_tap(tap, bridge=BRIDGE_INTERNAL if internal_only else BRIDGE)
         if internal_only:
             LabManager._ensure_internal_bridge()
+        self._create_tap(tap, bridge=BRIDGE_INTERNAL if internal_only else BRIDGE)
 
         # Create a per-instance qcow2 overlay for Linux firmware so
         # multiple VMs can share the same base image concurrently.
@@ -449,9 +464,9 @@ class LabManager:
                 elif inst.get("multi_homed") and inst.get("mac_internal"):
                     if inst.get("ip_internal") not in ("pending", "unknown", None):
                         continue
-                for line in leases_int:
-                    parts = line.split()
-                    if len(parts) >= 3 and parts[1].lower() == inst["mac_internal"].lower():
-                        inst["ip_internal"] = parts[2]
-                        log.info("%s acquired internal IP %s", inst["id"], parts[2])
-                        break
+                    for line in leases_int:
+                        parts = line.split()
+                        if len(parts) >= 3 and parts[1].lower() == inst["mac_internal"].lower():
+                            inst["ip_internal"] = parts[2]
+                            log.info("%s acquired internal IP %s", inst["id"], parts[2])
+                            break
