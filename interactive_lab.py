@@ -67,9 +67,15 @@ APIOT_STALE_THRESHOLD = 30  # seconds — if no file changed in this window, API
 
 
 def _apiot_is_live() -> bool:
-    """Check whether any APIOT data file was modified recently."""
+    """Check whether APIOT is active: heartbeat or any data file modified recently."""
     now = time.time()
-    for name in ("network_state.json", "attack_log.json", "remediation_log.json"):
+    watched = (
+        "heartbeat.json",
+        "network_state.json",
+        "attack_log.json",
+        "remediation_log.json",
+    )
+    for name in watched:
         p = APIOT_DATA_DIR / name
         try:
             if now - p.stat().st_mtime < APIOT_STALE_THRESHOLD:
