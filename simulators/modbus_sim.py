@@ -183,7 +183,7 @@ class ModbusSim:
     """Modbus TCP device simulator."""
 
     def __init__(self, ip: str = "0.0.0.0", port: int = 502,
-                 watchdog_timeout: float = 10):
+                 watchdog_timeout: float = 60):
         self.ip = ip
         self.port = port
         self._crashed = threading.Event()

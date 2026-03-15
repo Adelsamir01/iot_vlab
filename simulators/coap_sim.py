@@ -136,10 +136,10 @@ def _handle_request(data: bytes, addr: tuple) -> bytes | None:
 class CoAPSim:
     """CoAP UDP device simulator."""
 
-    WATCHDOG_TIMEOUT_S = 10  # seconds before auto-reset (simulates embedded watchdog)
+    WATCHDOG_TIMEOUT_S = 60  # seconds before auto-reset (simulates embedded watchdog)
 
     def __init__(self, ip: str = "0.0.0.0", port: int = 5683,
-                 watchdog_timeout: float = 10):
+                 watchdog_timeout: float = 60):
         self.ip = ip
         self.port = port
         self._crashed = threading.Event()
