@@ -35,9 +35,19 @@ def library():
 
 @app.route("/topology", methods=["GET"])
 def topology():
-    """Return all active QEMU instances."""
+    """Return all active QEMU instances plus any running software simulators."""
     manager.refresh_ips()
-    return jsonify(manager.get_topology())
+    devices = manager.get_topology()
+    # Merge in software simulators (written by SimManager)
+    sim_topo_file = Path(__file__).resolve().parent / "data" / "sim_topology.json"
+    if sim_topo_file.exists():
+        import json
+        try:
+            sims = json.loads(sim_topo_file.read_text())
+            devices = devices + sims
+        except Exception:
+            pass
+    return jsonify(devices)
 
 
 @app.route("/spawn", methods=["POST"])
@@ -72,6 +82,31 @@ def reset_lab():
     """Kill all running instances."""
     count = manager.reset_lab()
     return jsonify({"status": "reset", "stopped": count})
+
+
+@app.route("/api/ready", methods=["GET"])
+def api_ready():
+    """Health + readiness check for APIOT lab_bridge.
+
+    Returns ready=true unconditionally — simulators are started by the
+    experiment runner, not by lab_api, so the topology may be empty here.
+    """
+    topo = manager.get_topology()
+    # Also check if sim_topology.json has entries (software simulators)
+    sim_topo_file = Path(__file__).resolve().parent / "data" / "sim_topology.json"
+    sim_count = 0
+    if sim_topo_file.exists():
+        import json
+        try:
+            sim_count = len(json.loads(sim_topo_file.read_text()))
+        except Exception:
+            pass
+    return jsonify({
+        "ready": True,
+        "qemu_devices": len(topo),
+        "sim_devices": sim_count,
+        "total_devices": len(topo) + sim_count,
+    })
 
 
 if __name__ == "__main__":
