@@ -53,6 +53,7 @@ class MQTTClientSim:
         self.messages_published = 0
         self.commands_received  = 0
         self.start_time         = time.time()
+        self.crashed            = False
 
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
@@ -81,6 +82,20 @@ class MQTTClientSim:
         except Exception:
             payload = repr(msg.payload)
         logger.info("Command on %s: %s", msg.topic, payload)
+
+        # Crash trigger: {"action": "shutdown"} models an unauthenticated
+        # command-injection vulnerability — device trusts any MQTT publisher.
+        try:
+            data = json.loads(payload)
+            if data.get("action") == "shutdown":
+                logger.warning(
+                    "Shutdown command received on %s — simulating device crash.",
+                    msg.topic,
+                )
+                self.crashed = True
+                self._stop.set()
+        except (json.JSONDecodeError, AttributeError):
+            pass
 
     # ── lifecycle ─────────────────────────────────────────────────────
 
@@ -141,6 +156,7 @@ class MQTTClientSim:
             "broker":    f"{self.broker_ip}:{self.broker_port}",
             "client_id": self.client_id,
             "connected": self.connected,
+            "crashed":   self.crashed,
             "messages_published": self.messages_published,
             "commands_received":  self.commands_received,
             "uptime_s": round(time.time() - self.start_time, 1),
