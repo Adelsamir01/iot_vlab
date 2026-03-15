@@ -160,6 +160,16 @@ class LabManager:
                     "-net", f"tap,ifname={tap},script=no,downscript=no",
                 ],
             },
+            "cortex-m4": {
+                "qemu_bin": "qemu-system-arm",
+                "drive": [],
+                # mps2-an386: SMSC LAN9118 Ethernet — MAC is configurable
+                # so multiple M4 devices can coexist on the bridge.
+                "net": [
+                    "-net", f"nic,model=lan9118,macaddr={mac}",
+                    "-net", f"tap,ifname={tap},script=no,downscript=no",
+                ],
+            },
             "riscv32": {
                 "qemu_bin": "qemu-system-riscv32",
                 "drive": [],
@@ -216,6 +226,21 @@ class LabManager:
             # cortex-m3 doesn't support multi-homed (single Stellaris MAC)
             net_config = [
                 "-net", "nic,model=stellaris",
+                "-net", f"tap,ifname={tap},script=no,downscript=no",
+            ]
+            cmd = [
+                profile["qemu_bin"],
+                "-M", machine,
+                "-kernel", kernel,
+                "-nographic",
+                *net_config,
+            ]
+            return cmd
+
+        if arch == "cortex-m4":
+            # mps2-an386: unique MAC per instance, no single-device constraint
+            net_config = [
+                "-net", f"nic,model=lan9118,macaddr={mac}",
                 "-net", f"tap,ifname={tap},script=no,downscript=no",
             ]
             cmd = [

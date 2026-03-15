@@ -1,18 +1,20 @@
 #!/usr/bin/env bash
-# build_advanced_firmware.sh — Build CoAP server + Fake PLC for qemu_cortex_m3
+# build_advanced_firmware.sh — Build CoAP server + Fake PLC firmware
 # Produces:
-#   library/zephyr_coap/zephyr.elf      (CoAP server, UDP :5683)
-#   library/arm_modbus_sim/zephyr.elf   (TCP echo on :502, "Fake PLC")
+#   library/zephyr_coap/zephyr.elf      (CoAP server, UDP :5683, Cortex-M3)
+#   library/arm_modbus_sim/zephyr.elf   (TCP echo on :502, "Fake PLC", Cortex-M3)
+#   library/zephyr_coap_m4/zephyr.elf   (CoAP server, UDP :5683, Cortex-M4F)
 #
 # NOTE: qemu_riscv32 lacks an Ethernet driver in Zephyr 3.7 (no virtio-net
 # binding, no PCI+e1000 DTS, SLIP requires unavailable second UART).
-# Both firmware therefore target qemu_cortex_m3 (Stellaris Ethernet) which
-# bridges to br0 reliably.
+# M3 firmware targets qemu_cortex_m3 (Stellaris Ethernet).
+# M4 firmware targets mps2_an386 (SMSC LAN9118 Ethernet).
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ZEPHYR_BASE="$HOME/iot-lab/zephyrproject/zephyr"
 BOARD="qemu_cortex_m3"
+BOARD_M4="mps2/an386"
 
 info() { echo "[+] $*"; }
 err()  { echo "[ERROR] $*" >&2; }
@@ -128,14 +130,65 @@ cp "$PLC_ELF" "$PLC_DEST/zephyr.elf"
 info "Installed Fake PLC → $PLC_DEST/zephyr.elf"
 
 # ═══════════════════════════════════════════════════════════════════════════
+# Firmware C: CoAP Server on Cortex-M4F (mps2-an386, LAN9118 Ethernet)
+# ═══════════════════════════════════════════════════════════════════════════
+COAP_M4_BUILD="$ZEPHYR_BASE/build_coap_mps2_an386"
+COAP_M4_DEST="$SCRIPT_DIR/library/zephyr_coap_m4"
+COAP_M4_OVERLAY="$ZEPHYR_BASE/$COAP_SAMPLE/overlay-mps2-an386-dhcp.conf"
+
+cat > "$COAP_M4_OVERLAY" <<'EOF'
+# MPS2-AN386: SMSC LAN9118 Ethernet (lan9118 in QEMU)
+CONFIG_NET_L2_ETHERNET=y
+CONFIG_ETH_SMSC911X=y
+CONFIG_NET_QEMU_ETHERNET=n
+
+# IPv4 + DHCP
+CONFIG_NET_IPV6=n
+CONFIG_NET_CONFIG_NEED_IPV6=n
+CONFIG_NET_IPV4=y
+CONFIG_NET_CONFIG_NEED_IPV4=y
+CONFIG_NET_DHCPV4=y
+CONFIG_NET_CONFIG_MY_IPV4_ADDR=""
+CONFIG_NET_CONFIG_PEER_IPV4_ADDR=""
+
+# Disable shell to reduce image size
+CONFIG_SHELL=n
+CONFIG_NET_SHELL=n
+CONFIG_KERNEL_SHELL=n
+CONFIG_COAP_SERVER_SHELL=n
+
+# Minimal logging
+CONFIG_NET_LOG=n
+CONFIG_LOG=y
+CONFIG_LOG_DEFAULT_LEVEL=2
+EOF
+
+info "Building CoAP server for $BOARD_M4 (Cortex-M4F) ..."
+west build -p always -b "$BOARD_M4" "$COAP_SAMPLE" \
+    -d "$COAP_M4_BUILD" \
+    -- -DOVERLAY_CONFIG="overlay-mps2-an386-dhcp.conf"
+
+COAP_M4_ELF="$COAP_M4_BUILD/zephyr/zephyr.elf"
+[[ -f "$COAP_M4_ELF" ]] || { err "CoAP M4 build OK but zephyr.elf missing at $COAP_M4_ELF"; exit 1; }
+info "CoAP M4 build OK: $(du -h "$COAP_M4_ELF" | cut -f1)"
+
+mkdir -p "$COAP_M4_DEST"
+cp "$COAP_M4_ELF" "$COAP_M4_DEST/zephyr.elf"
+info "Installed CoAP M4 → $COAP_M4_DEST/zephyr.elf"
+
+# ═══════════════════════════════════════════════════════════════════════════
 echo ""
 echo "========================================="
-echo "  Phase 2.6 Firmware Ready"
-echo "  Board:  $BOARD (lm3s6965evb)"
+echo "  Firmware Build Complete"
+echo "  M3 Board: $BOARD (lm3s6965evb, Stellaris Ethernet)"
+echo "  M4 Board: $BOARD_M4 (mps2-an386, LAN9118 Ethernet)"
 echo ""
-echo "  A) CoAP Server    → $COAP_DEST/zephyr.elf"
+echo "  A) CoAP Server (M3) → $COAP_DEST/zephyr.elf"
 echo "     Protocol: CoAP (UDP :5683)"
 echo ""
-echo "  B) Fake PLC       → $PLC_DEST/zephyr.elf"
+echo "  B) Fake PLC (M3)    → $PLC_DEST/zephyr.elf"
 echo "     Protocol: TCP echo on :502 (Modbus port)"
+echo ""
+echo "  C) CoAP Server (M4) → $COAP_M4_DEST/zephyr.elf"
+echo "     Protocol: CoAP (UDP :5683) — Cortex-M4F, multi-instance capable"
 echo "========================================="
