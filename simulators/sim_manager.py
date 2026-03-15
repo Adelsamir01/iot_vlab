@@ -36,6 +36,7 @@ from pathlib import Path
 
 from iot_vlab.simulators.modbus_sim import ModbusSim
 from iot_vlab.simulators.coap_sim import CoAPSim
+from iot_vlab.simulators.mqtt_client_sim import MQTTClientSim
 
 logger = logging.getLogger("sim_manager")
 
@@ -59,6 +60,7 @@ class SimManager:
         self._used_octets: list[int] = []
         self._sims: dict[str, ModbusSim | CoAPSim] = {}  # ip -> sim instance
         self._aliases: list[str] = []  # IPs for which we created aliases
+        self._mqtt_clients: dict[str, MQTTClientSim] = {}  # broker_ip -> client
         _TOPO_FILE.parent.mkdir(parents=True, exist_ok=True)
 
     # ── IP allocation ────────────────────────────────────────────────
@@ -140,12 +142,45 @@ class SimManager:
             self._free_ip(ip)
         self._write_topology()
 
+    def start_mqtt_client(self, broker_ip: str, client_id: str = "iot-sensor-01",
+                          publish_interval: float = 5.0) -> str:
+        """Start an MQTT publisher that connects to the given broker IP.
+
+        Unlike Modbus/CoAP sims, MQTT clients don't need their own IP alias —
+        they connect outbound to the QEMU broker. Returns the broker_ip as key.
+        """
+        with self._lock:
+            if broker_ip in self._mqtt_clients:
+                raise RuntimeError(f"MQTT client for {broker_ip} already running")
+        client = MQTTClientSim(broker_ip=broker_ip, client_id=client_id,
+                               publish_interval=publish_interval)
+        client.start()
+        with self._lock:
+            self._mqtt_clients[broker_ip] = client
+        logger.info("MQTT client started → broker %s:1883", broker_ip)
+        return broker_ip
+
+    def stop_mqtt_client(self, broker_ip: str):
+        """Stop the MQTT client connected to the given broker IP."""
+        with self._lock:
+            client = self._mqtt_clients.pop(broker_ip, None)
+        if client:
+            client.stop()
+            logger.info("MQTT client stopped (broker %s)", broker_ip)
+
+    def get_mqtt_client(self, broker_ip: str) -> MQTTClientSim | None:
+        with self._lock:
+            return self._mqtt_clients.get(broker_ip)
+
     def stop_all(self):
         """Stop all running simulators and clean up IP aliases."""
         with self._lock:
             ips = list(self._sims.keys())
+            broker_ips = list(self._mqtt_clients.keys())
         for ip in ips:
             self.stop(ip)
+        for broker_ip in broker_ips:
+            self.stop_mqtt_client(broker_ip)
         _TOPO_FILE.write_text(json.dumps([]))
         logger.info("All simulators stopped.")
 

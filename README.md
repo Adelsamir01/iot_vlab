@@ -4,11 +4,12 @@ A **native** (no Docker) IoT firmware emulation lab for Kali Linux. Boots real r
 
 The lab is designed to be targeted by [APIOT](https://github.com/Adelsamir01/apiot) — an autonomous LLM-driven purple team agent — but can be used standalone for any IoT security testing.
 
-Three device classes across multiple protocols:
+Four device classes across multiple protocols:
 
 - **MIPS Linux routers** — same architecture as consumer routers (Linksys, D-Link, TP-Link)
 - **ARM Linux gateways** — representative of ARM-based IoT cameras, hubs, and embedded controllers
-- **ARM Cortex-M3 industrial devices** — resource-constrained MCUs running Zephyr RTOS with bare-metal CoAP and Modbus/TCP stacks, simulating PLCs and field sensors
+- **ARM Cortex-M3/M4 industrial devices** — resource-constrained MCUs running Zephyr RTOS with bare-metal CoAP and Modbus/TCP stacks, simulating PLCs and field sensors
+- **MQTT broker gateway** — Debian ARMel VM with Mosquitto installed on-demand via SSH, simulating an MQTT aggregation gateway
 
 ---
 
@@ -48,6 +49,8 @@ QEMU devices get IPs in `.10-.50` via dnsmasq DHCP. Python simulators bind stati
 | `zephyr_echo` | Industrial Sensor (Echo) | ARM Cortex-M3 | Zephyr RTOS 3.7 | TCP+UDP echo :4242 | none | 3-6 s |
 | `zephyr_coap` | Smart Meter (CoAP) | ARM Cortex-M3 | Zephyr RTOS 3.7 | CoAP UDP :5683 | none | 5-8 s |
 | `arm_modbus_sim` | PLC Valve Controller | ARM Cortex-M3 | Zephyr RTOS 3.7 | Modbus/TCP :502 | none | 5-8 s |
+| `zephyr_coap_m4` | Smart Meter (CoAP) — Cortex-M4F | ARM Cortex-M4F | Zephyr RTOS 3.7 | CoAP UDP :5683 | none | 5-8 s |
+| `debian_mqtt_broker` | MQTT Broker Gateway | ARMv5TE | Debian Wheezy + Mosquitto | MQTT :1883 | `root:root` | 60-90 s + ~60 s Mosquitto setup |
 
 > **Stellaris MAC constraint:** The lm3s6965evb SoC has a hardcoded MAC address (`00:00:94:00:83:00`). Only **one** Cortex-M3 device can be on the bridge at a time.
 
@@ -59,14 +62,20 @@ Lightweight Python processes that bind to static IPs on `br0`, crash-and-restart
 |---|---|---|---|---|
 | CoAP | `simulators/coap_sim.py` | `.100-.149` | CoAP UDP :5683 | Option byte `0xDD` (delta=13, len=13 overflow) |
 | Modbus | `simulators/modbus_sim.py` | `.150-.199` | Modbus/TCP :502 | MBAP `length` field ≥ 1000 |
+| MQTT Client | `simulators/mqtt_client_sim.py` | n/a (outbound) | MQTT :1883 | n/a (publisher only) |
 
 Simulators have a configurable watchdog: if they do not receive traffic for N seconds after a crash, they auto-reset. The default watchdog is 60 s (matching the LLM response window).
 
 The `sim_manager.py` module orchestrates multiple simulators together and integrates with `lab_api.py`'s `/topology` endpoint, so APIOT's network mapper sees simulators alongside QEMU devices.
 
+`MQTTClientSim` is an outbound publisher that connects to a Mosquitto broker (the `debian_mqtt_broker` QEMU VM) and periodically publishes sensor telemetry on `iot/sensors/{temperature,humidity,pressure}`. It subscribes to `iot/commands/#` for command injection tests.
+
 ```bash
 # Start a single simulator manually
 sudo python3 -m iot_vlab.simulators.coap_sim --ip 192.168.100.100 --port 5683
+
+# Start MQTT publisher (requires a broker VM already running)
+python3 -m iot_vlab.simulators.mqtt_client_sim --broker 192.168.100.10
 
 # Start via experiment runner (preferred)
 python3 scripts/run_experiment.py --protocol coap --topology T1 ...
@@ -81,7 +90,7 @@ python3 scripts/run_experiment.py --protocol coap --topology T1 ...
 | **Kali Linux** (or Debian-based) | Tested on Kali 6.16.8 aarch64 |
 | **sudo access** | Required for bridge/TAP networking and QEMU |
 | **~600 MB disk** | For the Linux firmware images |
-| **Python 3.10+** | With `flask`, `requests` |
+| **Python 3.10+** | With `flask`, `requests`, `paho-mqtt` |
 | **Zephyr toolchain** (optional) | Only needed to rebuild MCU firmware from source |
 
 ### Why `sudo` is required
@@ -106,9 +115,9 @@ cd iot_vlab
 ### 2. Install Python dependencies
 
 ```bash
-pip3 install flask requests
+pip3 install flask requests paho-mqtt
 # On Kali you may need:
-pip3 install --break-system-packages flask requests
+pip3 install --break-system-packages flask requests paho-mqtt
 ```
 
 ### 3. Set up the host network
@@ -213,6 +222,36 @@ echo -ne '\x40\x01\x00\x01' | nc -u -w2 <ip> 5683
 
 # Modbus/TCP (port 502) — read coils FC01
 echo -ne '\x00\x01\x00\x00\x00\x06\x01\x01\x00\x00\x00\x08' | nc <ip> 502
+
+# MQTT broker (port 1883) — subscribe to all topics
+mosquitto_sub -h <broker_ip> -t '#' -v
+
+# MQTT broker — publish a test message
+mosquitto_pub -h <broker_ip> -t 'iot/test' -m 'hello'
+```
+
+### Option D: Spin up an MQTT broker VM
+
+```bash
+# 1. Start the lab API
+sudo python3 lab_api.py
+
+# 2. Spawn the MQTT broker VM (boots debian_armel firmware)
+curl -s -X POST http://localhost:5000/spawn \
+  -H 'Content-Type: application/json' \
+  -d '{"firmware_id": "debian_mqtt_broker"}'
+# → {"run_id": "debian_mqtt_broker_<id>"}
+
+# 3. Wait for DHCP (~90s), then install Mosquitto via SSH
+curl -s -X POST http://localhost:5000/setup_mqtt/debian_mqtt_broker_<id>
+# → {"status": "pending", "ip": "192.168.100.XX"}
+
+# 4. Poll until ready (~60s for apt-get install)
+curl -s http://localhost:5000/mqtt_status/debian_mqtt_broker_<id>
+# → {"status": "ok", "ip": "192.168.100.XX", "detail": "Mosquitto listening on :1883"}
+
+# 5. Use the broker
+mosquitto_pub -h 192.168.100.XX -t 'iot/sensors/temperature' -m '23.4'
 ```
 
 ---
@@ -223,10 +262,12 @@ echo -ne '\x00\x01\x00\x00\x00\x06\x01\x01\x00\x00\x00\x08' | nc <ip> 502
 |---|---|---|---|---|
 | `GET` | `/library` | — | `[{id, name, arch, ...}]` | List all firmware profiles |
 | `GET` | `/topology` | — | `[{id, firmware_id, ip, mac, pid, alive}]` | All running devices (QEMU + simulators) |
-| `GET` | `/ready` | — | `{"ready": true/false}` | Lab readiness check |
+| `GET` | `/api/ready` | — | `{"ready": true, "total_devices": N}` | Lab readiness check |
 | `POST` | `/spawn` | `{"firmware_id": "..."}` | `{"run_id": "..."}` (201) | Boot a new QEMU instance |
 | `POST` | `/kill/<run_id>` | — | `{"status": "stopped"}` | Stop one instance |
 | `POST` | `/reset_lab` | — | `{"status": "reset", "stopped": N}` | Kill all instances |
+| `POST` | `/setup_mqtt/<run_id>` | — | `{"status": "pending"}` (202) | Install + start Mosquitto on a Linux VM via SSH (async) |
+| `GET` | `/mqtt_status/<run_id>` | — | `{"status": "pending"\|"ok"\|"failed", "ip": "..."}` | Poll Mosquitto setup progress |
 
 ---
 
@@ -259,6 +300,8 @@ echo -ne '\x00\x01\x00\x00\x00\x06\x01\x01\x00\x00\x00\x08' | nc <ip> 502
 ├── simulators/                 # Python-based protocol simulators
 │   ├── coap_sim.py             # CoAP UDP server with crash/watchdog semantics
 │   ├── modbus_sim.py           # Modbus/TCP server with MBAP overflow crash
+│   ├── mqtt_broker_setup.py    # SSH-based Mosquitto installer for QEMU Linux VMs
+│   ├── mqtt_client_sim.py      # MQTT sensor publisher (connects to broker VM)
 │   └── sim_manager.py          # Multi-simulator orchestrator + topology bridge
 │
 ├── setup_network.sh            # Create br0 bridge, dnsmasq, NAT, install QEMU
@@ -272,14 +315,18 @@ echo -ne '\x00\x01\x00\x00\x00\x06\x01\x01\x00\x00\x00\x08' | nc <ip> 502
 ├── library/
 │   ├── dvrf_v03/               # MIPS Linux router (vmlinux + rootfs.img)
 │   ├── debian_armel/           # ARM Linux gateway (vmlinuz + rootfs.qcow2)
+│   ├── debian_mqtt_broker/     # MQTT broker profile (shares debian_armel firmware)
 │   ├── zephyr_echo/            # Zephyr TCP+UDP echo :4242 (zephyr.elf)
 │   ├── zephyr_coap/            # Zephyr CoAP :5683 (zephyr.elf)
+│   ├── zephyr_coap_m4/         # Zephyr CoAP :5683 for Cortex-M4F (zephyr.elf)
 │   └── arm_modbus_sim/         # Zephyr Modbus/TCP :502 (zephyr.elf)
 │
 └── tests/
     ├── test_phase2.py          # Multi-device orchestration
     ├── test_phase2_5.py        # Cortex-M3 / Zephyr echo (12 tests)
-    └── test_phase2_6.py        # CoAP + Modbus protocol (23 tests)
+    ├── test_phase2_6.py        # CoAP + Modbus protocol (23 tests)
+    ├── test_phase2_7.py        # Cortex-M4F / mps2-an386 (15 tests)
+    └── test_mqtt.py            # MQTT broker + MQTTClientSim (19 tests, needs firmware)
 ```
 
 ---
@@ -298,6 +345,12 @@ sudo python3 tests/test_phase2_5.py
 
 # CoAP + Modbus protocol expansion (23 tests)
 sudo python3 tests/test_phase2_6.py
+
+# Cortex-M4F (mps2-an386) verification (15 tests)
+sudo python3 tests/test_phase2_7.py
+
+# MQTT broker + sensor publisher (19 tests — needs debian_armel firmware + ~3 min)
+sudo python3 tests/test_mqtt.py
 
 # Network impairments + HMI simulator (11 tests)
 bash test_realism_features.sh

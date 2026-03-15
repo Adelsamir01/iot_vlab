@@ -2,14 +2,17 @@
 """lab_api.py — REST API for the IoT Cyber Range.
 
 Endpoints:
-    GET  /library           List available firmware
-    GET  /topology          List running instances
-    POST /spawn             Boot a new device  {"firmware_id": "..."}
-    POST /kill/<run_id>     Stop a specific device
-    POST /reset_lab         Kill all devices
+    GET  /library                 List available firmware
+    GET  /topology                List running instances
+    POST /spawn                   Boot a new device  {"firmware_id": "..."}
+    POST /kill/<run_id>           Stop a specific device
+    POST /reset_lab               Kill all devices
+    POST /setup_mqtt/<run_id>     Install + start Mosquitto on a running Linux VM
+    GET  /mqtt_status/<run_id>    Check broker setup status
 """
 
 import sys
+import threading
 from pathlib import Path
 
 # Ensure the iot-lab directory is importable
@@ -19,6 +22,9 @@ from flask import Flask, jsonify, request
 
 from lab_manager import LabManager
 from scan_library import scan
+
+# Broker setup state: run_id -> {"status": "pending"|"ok"|"failed", "detail": str}
+_mqtt_setup_state: dict[str, dict] = {}
 
 app = Flask(__name__)
 manager = LabManager()
@@ -107,6 +113,62 @@ def api_ready():
         "sim_devices": sim_count,
         "total_devices": len(topo) + sim_count,
     })
+
+
+@app.route("/setup_mqtt/<run_id>", methods=["POST"])
+def setup_mqtt(run_id: str):
+    """Install and start Mosquitto on a running QEMU Linux VM.
+
+    Spawns a background thread that SSHes into the VM (sshpass) and runs
+    apt-get install mosquitto. Returns immediately with {"status": "pending"}.
+    Poll GET /mqtt_status/<run_id> to check progress.
+    """
+    manager.refresh_ips()
+    topo = manager.get_topology()
+    inst = next((d for d in topo if d["id"] == run_id), None)
+    if inst is None:
+        return jsonify({"error": f"Instance '{run_id}' not found in topology"}), 404
+
+    ip = inst.get("ip")
+    if not ip or ip in ("pending", "unknown"):
+        return jsonify({"error": "Instance has no IP yet — wait for DHCP"}), 409
+
+    creds = inst.get("default_creds", "root:root").split(":", 1)
+    ssh_user = creds[0]
+    ssh_pass = creds[1] if len(creds) > 1 else "root"
+
+    _mqtt_setup_state[run_id] = {"status": "pending", "ip": ip, "detail": ""}
+
+    def _do_setup():
+        from simulators.mqtt_broker_setup import setup_broker, wait_for_broker
+        ok = setup_broker(ip, ssh_user=ssh_user, ssh_pass=ssh_pass, timeout=600)
+        if ok:
+            # Give Mosquitto a moment then verify port 1883 is open
+            port_ok = wait_for_broker(ip, timeout=20)
+            _mqtt_setup_state[run_id] = {
+                "status": "ok" if port_ok else "failed",
+                "ip": ip,
+                "detail": "Mosquitto listening on :1883" if port_ok
+                          else "Setup script ran but port 1883 unreachable",
+            }
+        else:
+            _mqtt_setup_state[run_id] = {
+                "status": "failed",
+                "ip": ip,
+                "detail": "SSH setup script did not return MQTT_BROKER_READY",
+            }
+
+    threading.Thread(target=_do_setup, daemon=True).start()
+    return jsonify({"status": "pending", "run_id": run_id, "ip": ip}), 202
+
+
+@app.route("/mqtt_status/<run_id>", methods=["GET"])
+def mqtt_status(run_id: str):
+    """Return Mosquitto setup status for a given run_id."""
+    state = _mqtt_setup_state.get(run_id)
+    if state is None:
+        return jsonify({"error": f"No setup job for '{run_id}'"}), 404
+    return jsonify({"run_id": run_id, **state})
 
 
 if __name__ == "__main__":
