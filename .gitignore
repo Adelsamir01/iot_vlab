@@ -1,0 +1,26 @@
+# Firmware binaries (large, downloaded or built at setup)
+firmware/
+*.img
+*.qcow2
+*.elf
+vmlinux-*
+vmlinuz-*
+
+# Runtime
+logs/
+overlays/
+data/
+*.log
+*.pid
+*.leases
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# OS
+.DS_Store
+*.swp
+*~
+CLAUDE.md

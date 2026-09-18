@@ -1,0 +1,12 @@
+{
+    "id": "debian_mqtt_broker",
+    "name": "MQTT Broker Gateway (Debian ARMel + Mosquitto)",
+    "arch": "armel",
+    "kernel": "../debian_armel/vmlinuz-3.2.0-4-versatile",
+    "initrd": "../debian_armel/initrd.img-3.2.0-4-versatile",
+    "rootfs": "../debian_armel/rootfs.qcow2",
+    "qemu_machine": "versatilepb",
+    "default_creds": "root:root",
+    "mqtt_broker": true,
+    "ports": [1883]
+}

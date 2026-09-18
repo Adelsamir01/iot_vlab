@@ -1,0 +1,10 @@
+{
+    "id": "debian_armel",
+    "name": "Debian Wheezy ARM (VersatilePB)",
+    "arch": "armel",
+    "kernel": "vmlinuz-3.2.0-4-versatile",
+    "initrd": "initrd.img-3.2.0-4-versatile",
+    "rootfs": "rootfs.qcow2",
+    "qemu_machine": "versatilepb",
+    "default_creds": "root:root"
+}

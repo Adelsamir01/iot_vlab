@@ -1,0 +1,9 @@
+cff-version: 1.2.0
+title: "IoT Virtual Lab"
+message: "If you use this testbed, please cite the accompanying APIOT Computers & Security paper."
+type: software
+authors:
+  - family-names: ElZemity
+    given-names: Adel Samir
+repository-code: "https://github.com/Adelsamir01/iot_vlab"
+license: MIT

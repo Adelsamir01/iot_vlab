@@ -1,0 +1,10 @@
+{
+    "id": "zephyr_coap_m4",
+    "name": "Smart Meter (CoAP) — Cortex-M4F",
+    "arch": "cortex-m4",
+    "kernel": "zephyr.elf",
+    "rootfs": null,
+    "qemu_machine": "mps2-an386",
+    "default_creds": "none",
+    "net_model": "lan9118"
+}
