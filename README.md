@@ -21,22 +21,24 @@ Four device classes across multiple protocols:
 ## How It Works
 
 ```
-┌──────────────────────────────────────────────────────────────────────────┐
-│  Kali Linux Host                                                         │
-│                                                                          │
-│  ┌────────────┐   ┌──────────────────────────────────────────────────┐  │
-│  │ lab_api.py │   │  br0  virtual bridge  192.168.100.1/24           │  │
-│  │ REST :5000 │──▶│                                                  │  │
-│  └────────────┘   │  tap0 ─── QEMU (MIPS Malta)    Linux router     │  │
-│                   │  tap1 ─── QEMU (ARM VersatilePB) Linux GW       │  │
-│  ┌────────────┐   │  tap2 ─── QEMU (ARM lm3s6965evb) Zephyr MCU    │  │
-│  │simulators/ │   │                                                  │  │
-│  │(Python)    │──▶│  .100+ ── coap_sim.py / modbus_sim.py           │  │
-│  └────────────┘   │                                                  │  │
-│                   │  dnsmasq ─ DHCP .10-.50 for QEMU guests          │  │
-│                   │  iptables ─ NAT to internet                      │  │
-│                   └──────────────────────────────────────────────────┘  │
-└──────────────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  Host (e.g. Kali Linux)                                                      │
+│                                                                              │
+│  ┌──────────────┐    ┌────────────────────────────────────────────────────┐  │
+│  │ lab_api.py   │    │  br0  virtual bridge   192.168.100.1/24            │  │
+│  │ REST :5000   ├───▶│                                                    │  │
+│  └──────────────┘    │  tap0 ── QEMU (MIPS Malta)       Linux router      │  │
+│                      │  tap1 ── QEMU (ARM VersatilePB)  Linux gateway     │  │
+│  ┌──────────────┐    │  tap2 ── QEMU (ARM lm3s6965evb)  Zephyr MCU        │  │
+│  │ simulators/  │    │  tapN ── QEMU (ARM)              MQTT broker VM    │  │
+│  │ (Python)     ├───▶│                                                    │  │
+│  └──────────────┘    │  .100+ ─ coap_sim.py / modbus_sim.py               │  │
+│                      │         (+ mqtt_client_sim publisher as needed)    │  │
+│                      │                                                    │  │
+│                      │  dnsmasq  ─ DHCP .10–.50 for QEMU guests           │  │
+│                      │  iptables ─ NAT to the host network                │  │
+│                      └────────────────────────────────────────────────────┘  │
+└──────────────────────────────────────────────────────────────────────────────┘
 ```
 
 QEMU devices get IPs in `.10-.50` via dnsmasq DHCP. Python simulators bind statically to `.100+` addresses. Both are accessible on the same bridge, so agents targeting the network see a mix of QEMU and Python-simulated devices.
